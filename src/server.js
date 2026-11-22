@@ -3,8 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AIRPORTS } from './airports.js';
-import { GlobalFlightSimulator } from './simulator.js';
-import { OpenSkyClient } from './opensky.js';
+import { LiveAdsbClient } from './opensky.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,19 +56,16 @@ function filterFlights(flights, searchQuery) {
   if (!q) return flights;
   return flights.filter((f) =>
     (f.callsign && f.callsign.toLowerCase().includes(q)) ||
-    (f.flightNumber && f.flightNumber.toLowerCase().includes(q)) ||
     (f.icao24 && f.icao24.toLowerCase().includes(q)) ||
-    (f.airline && f.airline.toLowerCase().includes(q)) ||
-    (f.origin && f.origin.toLowerCase().includes(q)) ||
-    (f.destination && f.destination.toLowerCase().includes(q)) ||
-    (f.originCountry && f.originCountry.toLowerCase().includes(q))
+    (f.registration && f.registration.toLowerCase().includes(q)) ||
+    (f.aircraftType && f.aircraftType.toLowerCase().includes(q)) ||
+    (f.originCountry && f.originCountry.toLowerCase().includes(q)) ||
+    (f.squawk && f.squawk.toLowerCase().includes(q))
   );
 }
 
 export function createAppServer(options = {}) {
-  const defaultMode = options.mode || process.env.FLIGHT_DATA_MODE || 'auto';
-  const simulator = options.simulator || new GlobalFlightSimulator({ timeScale: options.timeScale ?? 14 });
-  const opensky = options.opensky || new OpenSkyClient();
+  const adsbClient = options.adsbClient || new LiveAdsbClient();
   const trackHistory = new Map();
 
   function recordTracks(flights) {
@@ -81,72 +77,41 @@ export function createAppServer(options = {}) {
         trackHistory.set(f.icao24, hist);
       }
       const last = hist[hist.length - 1];
-      if (!last || Math.abs(last.lat - f.lat) > 0.01 || Math.abs(last.lon - f.lon) > 0.01) {
+      if (!last || Math.abs(last.lat - f.lat) > 0.005 || Math.abs(last.lon - f.lon) > 0.005) {
         hist.push({ lat: f.lat, lon: f.lon, altFt: f.altitudeFt, ts: now });
-        if (hist.length > 40) hist.shift();
+        if (hist.length > 60) hist.shift();
       }
     }
-    // Trim stale tracks
-    if (trackHistory.size > 2000) {
+    if (trackHistory.size > 4000) {
       for (const [k, v] of trackHistory.entries()) {
-        if (!v.length || now - v[v.length - 1].ts > 600) {
+        if (!v.length || now - v[v.length - 1].ts > 900) {
           trackHistory.delete(k);
         }
       }
     }
   }
 
-  async function resolveFlights(requestedMode = defaultMode) {
-    const mode = ['auto', 'live', 'simulation'].includes(requestedMode) ? requestedMode : defaultMode;
+  async function resolveLiveFlights(params = {}) {
+    const provider = params.provider === 'adsbfi' ? 'adsbfi' : 'opensky';
+    const lat = Number.isFinite(Number(params.lat)) ? Number(params.lat) : 37.46;
+    const lon = Number.isFinite(Number(params.lon)) ? Number(params.lon) : 126.44;
+    const distNm = Number.isFinite(Number(params.dist)) ? Number(params.dist) : 250;
 
-    if (mode === 'simulation') {
-      const flights = simulator.getSnapshot();
-      recordTracks(flights);
-      return {
-        mode: 'simulation',
-        activeSource: 'simulation',
-        fallbackReason: null,
-        timestamp: Date.now(),
-        count: flights.length,
-        flights
-      };
+    const result = await adsbClient.fetchLiveFlights({ provider, lat, lon, distNm });
+    if (result.ok) {
+      recordTracks(result.flights);
     }
 
-    const liveResult = await opensky.fetchFlights();
-    if (liveResult.ok && liveResult.flights.length > 0) {
-      recordTracks(liveResult.flights);
-      return {
-        mode,
-        activeSource: 'opensky',
-        fallbackReason: null,
-        cached: Boolean(liveResult.cached),
-        timestamp: Date.now(),
-        count: liveResult.flights.length,
-        flights: liveResult.flights
-      };
-    }
-
-    if (mode === 'live') {
-      return {
-        mode: 'live',
-        activeSource: 'opensky',
-        fallbackReason: liveResult.error || 'Live ADS-B feed temporarily unavailable',
-        timestamp: Date.now(),
-        count: 0,
-        flights: []
-      };
-    }
-
-    // Smooth fallback to realistic global simulation when OpenSky is unavailable or rate-limited
-    const flights = simulator.getSnapshot();
-    recordTracks(flights);
     return {
-      mode: 'auto',
-      activeSource: 'simulation',
-      fallbackReason: liveResult.error || 'OpenSky unavailable — running global simulation',
+      ok: result.ok,
+      activeSource: result.source,
+      notice: result.notice || null,
+      error: result.ok ? null : (result.error || '실시간 ADS-B 데이터를 수신할 수 없습니다'),
       timestamp: Date.now(),
-      count: flights.length,
-      flights
+      updatedAt: result.updatedAt || null,
+      totalRaw: result.totalRaw ?? result.flights.length,
+      count: result.flights.length,
+      flights: result.flights
     };
   }
 
@@ -158,15 +123,14 @@ export function createAppServer(options = {}) {
       const pathname = reqUrl.pathname;
 
       if (pathname === '/api/health') {
-        return sendJson(res, 200, { status: 'ok', uptimeSec: Math.round(process.uptime()) });
+        return sendJson(res, 200, { status: 'ok', mode: 'live-only', uptimeSec: Math.round(process.uptime()) });
       }
 
       if (pathname === '/api/status') {
         return sendJson(res, 200, {
-          defaultMode,
-          opensky: opensky.getStatus(),
+          mode: 'live-only',
+          opensky: adsbClient.getStatus(),
           airportsCount: AIRPORTS.length,
-          simulatedFleetSize: simulator.flights.length,
           serverTimeUtc: new Date().toISOString()
         });
       }
@@ -176,9 +140,12 @@ export function createAppServer(options = {}) {
       }
 
       if (pathname === '/api/flights') {
-        const modeParam = reqUrl.searchParams.get('mode') || defaultMode;
+        const provider = reqUrl.searchParams.get('provider') || 'opensky';
+        const lat = reqUrl.searchParams.get('lat');
+        const lon = reqUrl.searchParams.get('lon');
+        const dist = reqUrl.searchParams.get('dist');
         const q = reqUrl.searchParams.get('q') || '';
-        const payload = await resolveFlights(modeParam);
+        const payload = await resolveLiveFlights({ provider, lat, lon, dist });
         const filtered = filterFlights(payload.flights, q);
         return sendJson(res, 200, {
           ...payload,
@@ -190,8 +157,8 @@ export function createAppServer(options = {}) {
 
       if (pathname.startsWith('/api/flights/')) {
         const icao24 = decodeURIComponent(pathname.slice('/api/flights/'.length)).toLowerCase();
-        const modeParam = reqUrl.searchParams.get('mode') || defaultMode;
-        const payload = await resolveFlights(modeParam);
+        const provider = reqUrl.searchParams.get('provider') || 'opensky';
+        const payload = await resolveLiveFlights({ provider });
         const flight = payload.flights.find((f) => f.icao24 === icao24);
         if (!flight) {
           return sendJson(res, 404, { error: 'Flight not found', icao24 });
@@ -203,20 +170,29 @@ export function createAppServer(options = {}) {
       }
 
       if (pathname === '/api/stream') {
-        const modeParam = reqUrl.searchParams.get('mode') || defaultMode;
+        const provider = reqUrl.searchParams.get('provider') || 'opensky';
+        const lat = reqUrl.searchParams.get('lat');
+        const lon = reqUrl.searchParams.get('lon');
+        const dist = reqUrl.searchParams.get('dist');
+
         res.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform',
           Connection: 'keep-alive'
         });
 
-        const client = { res, mode: modeParam };
+        const client = { res, provider, lat, lon, dist };
         sseClients.add(client);
 
         const pushUpdate = async () => {
           if (res.writableEnded) return;
           try {
-            const payload = await resolveFlights(client.mode);
+            const payload = await resolveLiveFlights({
+              provider: client.provider,
+              lat: client.lat,
+              lon: client.lon,
+              dist: client.dist
+            });
             res.write(`event: flights\ndata: ${JSON.stringify(payload)}\n\n`);
           } catch {
             // Ignore transient write errors
@@ -224,7 +200,7 @@ export function createAppServer(options = {}) {
         };
 
         await pushUpdate();
-        const timer = setInterval(pushUpdate, 2500);
+        const timer = setInterval(pushUpdate, 5000);
 
         req.on('close', () => {
           clearInterval(timer);
@@ -269,6 +245,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const HOST = process.env.HOST || '0.0.0.0';
   const server = createAppServer();
   server.listen(PORT, HOST, () => {
-    console.log(`[FlightTracker3D] Server listening on http://${HOST}:${PORT}`);
+    console.log(`[AeroGlobe3D] Live-Only ADS-B server listening on http://${HOST}:${PORT}`);
   });
 }

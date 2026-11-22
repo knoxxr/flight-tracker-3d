@@ -1,8 +1,9 @@
 const OPENSKY_STATES_URL = 'https://opensky-network.org/api/states/all';
 const OPENSKY_OAUTH_URL = 'https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token';
+const ADSBFI_BASE_URL = 'https://opendata.adsb.fi/api/v3';
 
 /**
- * Parse a raw 17-element OpenSky state vector array into a normalized flight telemetry object.
+ * Parse a raw 17-element OpenSky state vector array into a normalized live ADS-B flight object.
  * Spec: https://openskynetwork.github.io/opensky-api/rest.html#all-state-vectors
  */
 export function parseOpenSkyStateVector(vec, nowSec = Math.floor(Date.now() / 1000)) {
@@ -35,23 +36,11 @@ export function parseOpenSkyStateVector(vec, nowSec = Math.floor(Date.now() / 10
   return {
     icao24,
     callsign,
-    flightNumber: callsign,
-    airline: originCountry,
     originCountry,
     aircraftType: 'ADS-B',
-    aircraftLabel: 'Live ADS-B Transponder',
+    aircraftLabel: 'Live Transponder',
     registration: icao24.toUpperCase(),
     squawk,
-    origin: null,
-    originName: null,
-    destination: null,
-    destinationName: null,
-    originCoords: null,
-    destCoords: null,
-    distanceKm: null,
-    remainingKm: null,
-    etaMinutes: null,
-    progress: null,
     lat: Number(lat.toFixed(4)),
     lon: Number(lon.toFixed(4)),
     altitudeM,
@@ -65,6 +54,57 @@ export function parseOpenSkyStateVector(vec, nowSec = Math.floor(Date.now() / 10
     onGround,
     source: 'opensky',
     lastContact
+  };
+}
+
+/**
+ * Parse an adsb.fi v3 / ADS-B Exchange v2 aircraft object into the same normalized live flight object.
+ */
+export function parseAdsbFiAircraft(ac, nowSec = Math.floor(Date.now() / 1000)) {
+  if (!ac || typeof ac.lat !== 'number' || typeof ac.lon !== 'number') return null;
+  const icao24 = String(ac.hex || '').trim().toLowerCase();
+  if (!icao24) return null;
+
+  const onGround = ac.alt_baro === 'ground' || ac.alt_baro === 0;
+  const altFtRaw = typeof ac.alt_baro === 'number'
+    ? ac.alt_baro
+    : (typeof ac.alt_geom === 'number' ? ac.alt_geom : 0);
+  const altitudeFt = Math.max(0, Math.round(altFtRaw));
+  const altitudeM = Math.round(altitudeFt * 0.3048);
+
+  const speedKts = typeof ac.gs === 'number' ? Math.round(ac.gs) : 0;
+  const speedMs = Number((speedKts * 0.514444).toFixed(1));
+  const speedKmh = Math.round(speedKts * 1.852);
+  const heading = typeof ac.track === 'number' ? ((ac.track % 360) + 360) % 360 : 0;
+  const verticalRateFpm = typeof ac.baro_rate === 'number'
+    ? Math.round(ac.baro_rate)
+    : (typeof ac.geom_rate === 'number' ? Math.round(ac.geom_rate) : 0);
+  const verticalRateMs = Number((verticalRateFpm * 0.00508).toFixed(2));
+
+  const callsign = String(ac.flight || '').trim() || String(ac.r || '').trim() || icao24.toUpperCase();
+  const seenSec = typeof ac.seen === 'number' ? Math.round(ac.seen) : 0;
+
+  return {
+    icao24,
+    callsign,
+    originCountry: String(ac.ownOp || ac.dbFlags ? (ac.ownOp || 'Live ADS-B') : 'Live ADS-B'),
+    aircraftType: String(ac.t || 'ADS-B').trim(),
+    aircraftLabel: String(ac.desc || ac.t || 'Live Transponder').trim(),
+    registration: String(ac.r || icao24.toUpperCase()).trim(),
+    squawk: ac.squawk ? String(ac.squawk).trim() : '----',
+    lat: Number(ac.lat.toFixed(4)),
+    lon: Number(ac.lon.toFixed(4)),
+    altitudeM,
+    altitudeFt,
+    speedMs,
+    speedKts,
+    speedKmh,
+    heading: Number(heading.toFixed(1)),
+    verticalRateMs,
+    verticalRateFpm,
+    onGround,
+    source: 'adsbfi',
+    lastContact: Math.max(0, nowSec - seenSec)
   };
 }
 
@@ -104,23 +144,24 @@ export function deadReckonFlight(flight, elapsedSec) {
   };
 }
 
-export class OpenSkyClient {
+export class LiveAdsbClient {
   constructor(options = {}) {
     this.username = options.username || process.env.OPENSKY_USERNAME || '';
     this.password = options.password || process.env.OPENSKY_PASSWORD || '';
     this.clientId = options.clientId || process.env.OPENSKY_CLIENT_ID || '';
     this.clientSecret = options.clientSecret || process.env.OPENSKY_CLIENT_SECRET || '';
-    this.pollIntervalMs = Number(options.pollIntervalMs || process.env.OPENSKY_POLL_INTERVAL_MS || 15000);
-    this.maxFlights = Number(options.maxFlights || process.env.MAX_FLIGHTS || 600);
+    this.pollIntervalMs = Number(options.pollIntervalMs || process.env.OPENSKY_POLL_INTERVAL_MS || 20000);
+    this.maxFlights = Number(options.maxFlights || process.env.MAX_FLIGHTS || 1500);
 
-    this.cachedFlights = [];
-    this.lastFetchMs = 0;
-    this.lastSuccessMs = 0;
-    this.lastError = null;
+    this.cachedOpenSky = [];
+    this.lastOpenSkyFetchMs = 0;
+    this.lastOpenSkySuccessMs = 0;
+    this.openSkyBackoffUntilMs = 0;
+    this.lastOpenSkyError = null;
+    this.inFlightOpenSky = null;
+
     this.oauthToken = null;
     this.oauthExpiresAt = 0;
-    this.inFlightRequest = null;
-    this.backoffUntilMs = 0;
   }
 
   async getAuthHeaders() {
@@ -155,77 +196,66 @@ export class OpenSkyClient {
     return {};
   }
 
-  async fetchFlights(bounds = null) {
+  async fetchOpenSky() {
     const now = Date.now();
-
-    // Respect cache & rate-limit backoff window
-    if (this.cachedFlights.length > 0 && now - this.lastFetchMs < this.pollIntervalMs) {
-      const elapsedSec = (now - this.lastSuccessMs) / 1000;
+    if (this.cachedOpenSky.length > 0 && now - this.lastOpenSkyFetchMs < this.pollIntervalMs) {
+      const elapsedSec = (now - this.lastOpenSkySuccessMs) / 1000;
       return {
         ok: true,
+        source: 'opensky',
         cached: true,
-        flights: this.cachedFlights.map((f) => deadReckonFlight(f, elapsedSec))
+        updatedAt: this.lastOpenSkySuccessMs,
+        flights: this.cachedOpenSky.map((f) => deadReckonFlight(f, elapsedSec))
       };
     }
 
-    if (now < this.backoffUntilMs) {
+    if (now < this.openSkyBackoffUntilMs) {
+      const waitSec = Math.ceil((this.openSkyBackoffUntilMs - now) / 1000);
       return {
         ok: false,
-        error: this.lastError || 'OpenSky rate-limit backoff active',
+        source: 'opensky',
+        error: `${this.lastOpenSkyError || 'OpenSky 요청 제한'} (${waitSec}초 후 재시도)`,
         flights: []
       };
     }
 
-    if (this.inFlightRequest) {
-      return this.inFlightRequest;
-    }
-
-    this.inFlightRequest = this._doFetch(bounds).finally(() => {
-      this.inFlightRequest = null;
+    if (this.inFlightOpenSky) return this.inFlightOpenSky;
+    this.inFlightOpenSky = this._doFetchOpenSky().finally(() => {
+      this.inFlightOpenSky = null;
     });
-
-    return this.inFlightRequest;
+    return this.inFlightOpenSky;
   }
 
-  async _doFetch(bounds) {
-    this.lastFetchMs = Date.now();
+  async _doFetchOpenSky() {
+    this.lastOpenSkyFetchMs = Date.now();
     try {
-      const url = new URL(OPENSKY_STATES_URL);
-      if (bounds) {
-        url.searchParams.set('lamin', String(bounds.lamin));
-        url.searchParams.set('lomin', String(bounds.lomin));
-        url.searchParams.set('lamax', String(bounds.lamax));
-        url.searchParams.set('lomax', String(bounds.lomax));
-      }
-
       const headers = {
         Accept: 'application/json',
-        'User-Agent': 'FlightTracker3D/1.0',
+        'User-Agent': 'AeroGlobe3D/1.0 (+https://github.com/knoxxr/flight-tracker-3d)',
         ...(await this.getAuthHeaders())
       };
 
-      const res = await fetch(url, {
+      const res = await fetch(OPENSKY_STATES_URL, {
         headers,
-        signal: AbortSignal.timeout(8000)
+        signal: AbortSignal.timeout(9000)
       });
 
       if (res.status === 429) {
-        this.lastError = 'OpenSky API rate limit reached (HTTP 429)';
-        this.backoffUntilMs = Date.now() + 60_000;
-        return { ok: false, error: this.lastError, flights: [] };
+        this.lastOpenSkyError = 'OpenSky 요청 한도 초과 (HTTP 429)';
+        this.openSkyBackoffUntilMs = Date.now() + 60_000;
+        return { ok: false, source: 'opensky', error: this.lastOpenSkyError, flights: [] };
       }
 
       if (!res.ok) {
-        this.lastError = `OpenSky API error (HTTP ${res.status})`;
-        this.backoffUntilMs = Date.now() + 30_000;
-        return { ok: false, error: this.lastError, flights: [] };
+        this.lastOpenSkyError = `OpenSky 응답 오류 (HTTP ${res.status})`;
+        this.openSkyBackoffUntilMs = Date.now() + 30_000;
+        return { ok: false, source: 'opensky', error: this.lastOpenSkyError, flights: [] };
       }
 
       const data = await res.json();
       const rawStates = Array.isArray(data?.states) ? data.states : [];
       const nowSec = Math.floor(Date.now() / 1000);
 
-      // Prefer airborne aircraft with callsigns, evenly sampled across globe
       const parsed = [];
       for (const vec of rawStates) {
         const flight = parseOpenSkyStateVector(vec, nowSec);
@@ -235,22 +265,91 @@ export class OpenSkyClient {
       }
 
       const sampled = this.sampleEvenly(parsed, this.maxFlights);
-      this.cachedFlights = sampled;
-      this.lastSuccessMs = Date.now();
-      this.lastError = null;
-      this.backoffUntilMs = 0;
+      this.cachedOpenSky = sampled;
+      this.lastOpenSkySuccessMs = Date.now();
+      this.lastOpenSkyError = null;
+      this.openSkyBackoffUntilMs = 0;
 
       return {
         ok: true,
+        source: 'opensky',
         cached: false,
         totalRaw: parsed.length,
+        updatedAt: this.lastOpenSkySuccessMs,
         flights: sampled
       };
     } catch (err) {
-      this.lastError = err?.message || 'Unable to reach OpenSky Network';
-      this.backoffUntilMs = Date.now() + 30_000;
-      return { ok: false, error: this.lastError, flights: [] };
+      this.lastOpenSkyError = err?.message || 'OpenSky Network에 연결할 수 없습니다';
+      this.openSkyBackoffUntilMs = Date.now() + 25_000;
+      return { ok: false, source: 'opensky', error: this.lastOpenSkyError, flights: [] };
     }
+  }
+
+  async fetchAdsbFi(lat = 37.46, lon = 126.44, distNm = 250) {
+    try {
+      const clampedDist = Math.max(10, Math.min(250, Math.round(distNm)));
+      const url = `${ADSBFI_BASE_URL}/lat/${Number(lat).toFixed(3)}/lon/${Number(lon).toFixed(3)}/dist/${clampedDist}`;
+      const res = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'AeroGlobe3D/1.0 (+https://github.com/knoxxr/flight-tracker-3d)'
+        },
+        signal: AbortSignal.timeout(8000)
+      });
+
+      if (!res.ok) {
+        return { ok: false, source: 'adsbfi', error: `adsb.fi 응답 오류 (HTTP ${res.status})`, flights: [] };
+      }
+
+      const data = await res.json();
+      const list = Array.isArray(data?.aircraft) ? data.aircraft : (Array.isArray(data?.ac) ? data.ac : []);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const flights = [];
+      for (const ac of list) {
+        const f = parseAdsbFiAircraft(ac, nowSec);
+        if (f && !f.onGround) flights.push(f);
+      }
+
+      return {
+        ok: true,
+        source: 'adsbfi',
+        updatedAt: Date.now(),
+        totalRaw: flights.length,
+        flights
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        source: 'adsbfi',
+        error: err?.message || 'adsb.fi에 연결할 수 없습니다',
+        flights: []
+      };
+    }
+  }
+
+  async fetchLiveFlights({ provider = 'opensky', lat = 37.46, lon = 126.44, distNm = 250 } = {}) {
+    if (provider === 'adsbfi') {
+      return this.fetchAdsbFi(lat, lon, distNm);
+    }
+
+    const globalRes = await this.fetchOpenSky();
+    if (globalRes.ok) return globalRes;
+
+    // If OpenSky is temporarily unavailable/rate-limited, try real live adsb.fi around camera center
+    const regionalRes = await this.fetchAdsbFi(lat, lon, distNm);
+    if (regionalRes.ok) {
+      return {
+        ...regionalRes,
+        notice: `OpenSky 일시 제한으로 adsb.fi 실시간 지역 피드(반경 ${distNm}NM)로 수신 중`
+      };
+    }
+
+    return {
+      ok: false,
+      source: 'opensky',
+      error: globalRes.error || regionalRes.error || '실시간 ADS-B 피드에 연결할 수 없습니다',
+      flights: []
+    };
   }
 
   sampleEvenly(list, limit) {
@@ -266,10 +365,13 @@ export class OpenSkyClient {
   getStatus() {
     return {
       authenticated: Boolean((this.clientId && this.clientSecret) || (this.username && this.password)),
-      lastSuccessAt: this.lastSuccessMs ? new Date(this.lastSuccessMs).toISOString() : null,
-      lastError: this.lastError,
-      cachedCount: this.cachedFlights.length,
-      backoffActive: Date.now() < this.backoffUntilMs
+      lastSuccessAt: this.lastOpenSkySuccessMs ? new Date(this.lastOpenSkySuccessMs).toISOString() : null,
+      lastError: this.lastOpenSkyError,
+      cachedCount: this.cachedOpenSky.length,
+      backoffActive: Date.now() < this.openSkyBackoffUntilMs
     };
   }
 }
+
+// Keep backward-compatible named export alias
+export { LiveAdsbClient as OpenSkyClient };

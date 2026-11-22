@@ -1,25 +1,25 @@
 import { Globe3D } from './globe.js';
-import { BrowserFlightEngine, STATIC_AIRPORTS } from './flight-engine.js';
+import { LiveBrowserAdsbClient, STATIC_AIRPORTS } from './flight-engine.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
-const browserEngine = new BrowserFlightEngine();
+const liveClient = new LiveBrowserAdsbClient();
 
 const state = {
-  mode: 'auto',
-  activeSource: 'simulation',
-  fallbackReason: null,
+  provider: 'opensky', // 'opensky' (global live) | 'adsbfi' (250NM around current view)
+  activeSource: 'opensky',
   backendAvailable: false,
   rawFlights: [],
   flights: [],
-  airports: [],
+  trackHistory: new Map(),
   searchQuery: '',
   selectedIcao: null,
   followSelected: false,
-  panelMode: 'none', // 'none' | 'list' | 'detail'
-  lastServerSyncMs: performance.now(),
+  panelMode: 'none',
+  lastSyncMs: performance.now(),
+  lastUpdatedAt: null,
   eventSource: null,
-  staticPollTimer: null
+  pollTimer: null
 };
 
 // DOM References
@@ -28,7 +28,7 @@ const utcClockEl = document.getElementById('utc-clock');
 const statusDotEl = document.getElementById('status-dot');
 const sourceLabelEl = document.getElementById('source-label');
 const flightCountEl = document.getElementById('flight-count');
-const fallbackNoticeEl = document.getElementById('fallback-notice');
+const liveNoticeEl = document.getElementById('live-notice');
 const searchInputEl = document.getElementById('flight-search');
 const toggleListBtn = document.getElementById('toggle-list-btn');
 const sidePanelEl = document.getElementById('side-panel');
@@ -39,12 +39,13 @@ const listSubtitleEl = document.getElementById('list-subtitle');
 const tooltipEl = document.getElementById('hover-tooltip');
 const followBtn = document.getElementById('follow-flight-btn');
 const centerBtn = document.getElementById('center-flight-btn');
+const refreshBtn = document.getElementById('refresh-live-btn');
 
 const globe = new Globe3D(canvas, {
-  initialLat: 32,
-  initialLon: 126,
-  initialZoom: 1.35,
-  autoRotate: true,
+  initialLat: 36,
+  initialLon: 128,
+  initialZoom: 1.55,
+  autoRotate: false,
   dayNight: true,
   showTrails: true,
   showAirports: true,
@@ -64,11 +65,11 @@ const globe = new Globe3D(canvas, {
       tooltipEl.classList.add('hidden');
       return;
     }
-    const routeText = flight.origin && flight.destination
-      ? ` · ${flight.origin} → ${flight.destination}`
-      : '';
+    const meta = flight.aircraftType && flight.aircraftType !== 'ADS-B'
+      ? ` · ${flight.aircraftType}`
+      : (flight.originCountry ? ` · ${flight.originCountry}` : '');
     tooltipEl.innerHTML = `
-      <div><span class="tooltip-callsign">${escapeHtml(flight.callsign)}</span><span>${escapeHtml(routeText)}</span></div>
+      <div><span class="tooltip-callsign">${escapeHtml(flight.callsign)}</span><span>${escapeHtml(meta)}</span></div>
       <div class="tooltip-meta">${formatNumber(flight.altitudeFt)} ft · ${flight.speedKts} kts · HDG ${Math.round(flight.heading)}°</div>
     `;
     tooltipEl.style.left = `${Math.min(window.innerWidth - 220, pos.x + 14)}px`;
@@ -89,21 +90,20 @@ function formatNumber(n) {
   return Number(n || 0).toLocaleString('en-US');
 }
 
-function formatEta(minutes) {
-  if (!minutes || minutes <= 0) return '실시간 ADS-B';
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return h > 0 ? `잔여 ${h}시간 ${m}분` : `잔여 ${m}분`;
+function formatAge(epochSec) {
+  if (!epochSec) return '방금 수신';
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - epochSec);
+  if (diff < 2) return '방금 수신';
+  if (diff < 60) return `${diff}초 전`;
+  return `${Math.floor(diff / 60)}분 ${diff % 60}초 전`;
 }
 
-// Smooth client-side 60fps dead-reckoning between server SSE pushes
-function extrapolateFlight(flight, dtSec) {
-  if (!flight || flight.onGround || !flight.speedMs || dtSec <= 0 || dtSec > 8) {
+// Smooth 1x real-time dead-reckoning between live ADS-B packets
+function extrapolateLiveFlight(flight, dtSec) {
+  if (!flight || flight.onGround || !flight.speedMs || dtSec <= 0 || dtSec > 45) {
     return flight;
   }
-  // Simulator runs accelerated timeScale (~14x); live ADS-B moves at real 1x speed
-  const speedMultiplier = flight.source === 'simulation' ? 14 : 1;
-  const distKm = (flight.speedMs * dtSec * speedMultiplier) / 1000;
+  const distKm = (flight.speedMs * dtSec) / 1000;
   const angularDist = distKm / 6371.0088;
   const bearing = (flight.heading || 0) * DEG2RAD;
   const lat1 = flight.lat * DEG2RAD;
@@ -127,6 +127,23 @@ function extrapolateFlight(flight, dtSec) {
   };
 }
 
+function recordTrackPoints(flights) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (const f of flights) {
+    let hist = state.trackHistory.get(f.icao24);
+    if (!hist) {
+      hist = [];
+      state.trackHistory.set(f.icao24, hist);
+    }
+    const last = hist[hist.length - 1];
+    if (!last || Math.abs(last.lat - f.lat) > 0.004 || Math.abs(last.lon - f.lon) > 0.004) {
+      hist.push({ lat: f.lat, lon: f.lon, altFt: f.altitudeFt, ts: nowSec });
+      if (hist.length > 50) hist.shift();
+    }
+    f.track = hist;
+  }
+}
+
 function applySearchFilter() {
   const q = state.searchQuery.trim().toLowerCase();
   if (!q) {
@@ -134,21 +151,16 @@ function applySearchFilter() {
   } else {
     state.flights = state.rawFlights.filter((f) =>
       (f.callsign && f.callsign.toLowerCase().includes(q)) ||
-      (f.flightNumber && f.flightNumber.toLowerCase().includes(q)) ||
       (f.icao24 && f.icao24.toLowerCase().includes(q)) ||
-      (f.airline && f.airline.toLowerCase().includes(q)) ||
-      (f.origin && f.origin.toLowerCase().includes(q)) ||
-      (f.destination && f.destination.toLowerCase().includes(q)) ||
-      (f.originCountry && f.originCountry.toLowerCase().includes(q))
+      (f.registration && f.registration.toLowerCase().includes(q)) ||
+      (f.aircraftType && f.aircraftType.toLowerCase().includes(q)) ||
+      (f.originCountry && f.originCountry.toLowerCase().includes(q)) ||
+      (f.squawk && f.squawk.toLowerCase().includes(q))
     );
   }
   flightCountEl.textContent = formatNumber(state.flights.length);
-  if (state.panelMode === 'list') {
-    renderFlightList();
-  }
-  if (state.panelMode === 'detail' && state.selectedIcao) {
-    renderFlightDetail();
-  }
+  if (state.panelMode === 'list') renderFlightList();
+  if (state.panelMode === 'detail' && state.selectedIcao) renderFlightDetail();
 }
 
 function setPanelMode(mode) {
@@ -174,20 +186,28 @@ function selectFlight(icao24, fly = true) {
 }
 
 function renderFlightList() {
-  const topFlights = state.flights.slice(0, 60);
+  const topFlights = state.flights.slice(0, 80);
+  if (state.flights.length === 0) {
+    listSubtitleEl.textContent = '수신된 실시간 항공기가 없습니다';
+    listContainerEl.innerHTML = '<p class="panel-subtitle">실시간 ADS-B 신호를 기다리는 중이거나 검색 결과가 없습니다.</p>';
+    return;
+  }
+
   listSubtitleEl.textContent = state.searchQuery
-    ? `검색 결과 ${state.flights.length}대 중 상위 ${topFlights.length}대`
-    : `전체 ${state.flights.length}대 중 상위 ${topFlights.length}대`;
+    ? `검색 결과 ${formatNumber(state.flights.length)}대 중 상위 ${topFlights.length}대`
+    : `실시간 ${formatNumber(state.flights.length)}대 중 상위 ${topFlights.length}대`;
 
   listContainerEl.innerHTML = topFlights
     .map((f) => {
-      const route = f.origin && f.destination ? `${f.origin} → ${f.destination}` : f.originCountry;
       const selectedClass = f.icao24 === state.selectedIcao ? ' selected' : '';
+      const sub = f.registration && f.registration !== f.icao24.toUpperCase()
+        ? `${f.registration} · ${f.originCountry}`
+        : f.originCountry;
       return `
         <button type="button" class="flight-row${selectedClass}" data-icao="${escapeHtml(f.icao24)}">
           <div class="flight-row-main">
             <span class="flight-row-callsign">${escapeHtml(f.callsign)} <span class="muted">${escapeHtml(f.aircraftType)}</span></span>
-            <span class="flight-row-sub">${escapeHtml(route)} · ${escapeHtml(f.airline)}</span>
+            <span class="flight-row-sub">${escapeHtml(sub)}</span>
           </div>
           <div class="flight-row-metrics">
             <div>${formatNumber(f.altitudeFt)} ft</div>
@@ -199,31 +219,46 @@ function renderFlightList() {
     .join('');
 
   listContainerEl.querySelectorAll('.flight-row').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      selectFlight(btn.dataset.icao, true);
-    });
+    btn.addEventListener('click', () => selectFlight(btn.dataset.icao, true));
   });
 }
 
-function renderAltitudeProfileSvg(flight) {
+function renderLiveAltitudeChart(flight) {
   const svg = document.getElementById('altitude-profile-svg');
-  const progress = typeof flight.progress === 'number' ? flight.progress : 0.5;
-  const px = 14 + progress * 252;
-  const altNorm = Math.min(1, Math.max(0.08, (flight.altitudeFt || 32000) / 42000));
-  const py = 54 - altNorm * 40;
+  const track = state.trackHistory.get(flight.icao24) || [{ altFt: flight.altitudeFt }];
+  const maxAlt = Math.max(42000, ...track.map((p) => p.altFt || 0));
+
+  if (track.length === 1) {
+    const y = 52 - Math.min(1, (flight.altitudeFt || 0) / maxAlt) * 40;
+    svg.innerHTML = `
+      <line x1="14" y1="52" x2="266" y2="52" stroke="rgba(148,184,218,0.22)" stroke-width="1"/>
+      <line x1="14" y1="${y.toFixed(1)}" x2="266" y2="${y.toFixed(1)}" stroke="rgba(56,189,248,0.45)" stroke-dasharray="3 3" stroke-width="1.2"/>
+      <circle cx="258" cy="${y.toFixed(1)}" r="4" fill="#fbbf24" stroke="#091322" stroke-width="1.5"/>
+      <text x="16" y="14" fill="#6c859e" font-size="10" font-family="ui-monospace, monospace">수신 포인트 누적 중 (1개)</text>
+    `;
+    return;
+  }
+
+  const pts = track.map((pt, idx) => {
+    const x = 14 + (idx / (track.length - 1)) * 252;
+    const y = 52 - Math.min(1, Math.max(0, (pt.altFt || 0) / maxAlt)) * 40;
+    return [x, y];
+  });
+  const lineD = pts.map(([x, y], i) => `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+  const areaD = `${lineD} L ${pts[pts.length - 1][0].toFixed(1)} 52 L 14 52 Z`;
+  const last = pts[pts.length - 1];
 
   svg.innerHTML = `
     <defs>
-      <linearGradient id="profGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35"/>
+      <linearGradient id="liveAltGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.34"/>
         <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.02"/>
       </linearGradient>
     </defs>
-    <line x1="14" y1="54" x2="266" y2="54" stroke="rgba(148,184,218,0.22)" stroke-width="1"/>
-    <path d="M 14 54 C 34 54, 40 16, 62 16 L 218 16 C 240 16, 246 54, 266 54 Z" fill="url(#profGrad)"/>
-    <path d="M 14 54 C 34 54, 40 16, 62 16 L 218 16 C 240 16, 246 54, 266 54" fill="none" stroke="rgba(56,189,248,0.7)" stroke-width="1.8"/>
-    <line x1="${px.toFixed(1)}" y1="${py.toFixed(1)}" x2="${px.toFixed(1)}" y2="54" stroke="#fbbf24" stroke-dasharray="2 2" stroke-width="1.2"/>
-    <circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="4" fill="#fbbf24" stroke="#091322" stroke-width="1.5"/>
+    <line x1="14" y1="52" x2="266" y2="52" stroke="rgba(148,184,218,0.22)" stroke-width="1"/>
+    <path d="${areaD}" fill="url(#liveAltGrad)"/>
+    <path d="${lineD}" fill="none" stroke="#38bdf8" stroke-width="1.8"/>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="4" fill="#fbbf24" stroke="#091322" stroke-width="1.5"/>
   `;
 }
 
@@ -233,17 +268,9 @@ function renderFlightDetail() {
 
   document.getElementById('detail-callsign').textContent = f.callsign;
   document.getElementById('detail-aircraft-type').textContent = f.aircraftType || 'ADS-B';
-  document.getElementById('detail-airline').textContent = f.airline || f.originCountry;
-
-  const hasRoute = Boolean(f.origin && f.destination);
-  document.getElementById('detail-origin').textContent = hasRoute ? f.origin : 'LIVE';
-  document.getElementById('detail-origin-name').textContent = hasRoute ? (f.originName || f.origin) : '실시간 수신';
-  document.getElementById('detail-dest').textContent = hasRoute ? f.destination : 'ADS-B';
-  document.getElementById('detail-dest-name').textContent = hasRoute ? (f.destinationName || f.destination) : '트랜스폰더';
-  document.getElementById('detail-progress-fill').style.width = `${Math.round((f.progress ?? 0.5) * 100)}%`;
-  document.getElementById('detail-eta').textContent = hasRoute
-    ? `${formatNumber(f.remainingKm)} km · ${formatEta(f.etaMinutes)}`
-    : 'OpenSky 실시간 위치';
+  document.getElementById('detail-airline').textContent = f.originCountry || 'Live ADS-B';
+  document.getElementById('detail-source').textContent = f.source === 'adsbfi' ? 'adsb.fi Open Data' : 'OpenSky Network';
+  document.getElementById('detail-contact-age').textContent = formatAge(f.lastContact);
 
   document.getElementById('detail-alt-ft').textContent = `${formatNumber(f.altitudeFt)} ft`;
   document.getElementById('detail-alt-m').textContent = `${formatNumber(f.altitudeM)} m`;
@@ -255,37 +282,50 @@ function renderFlightDetail() {
   const vSign = vrate > 30 ? '▲ +' : vrate < -30 ? '▼ ' : '● ';
   document.getElementById('detail-vrate').textContent = `${vSign}${vrate} fpm`;
 
-  document.getElementById('detail-coords').textContent = `${f.lat.toFixed(2)}°, ${f.lon.toFixed(2)}°`;
+  document.getElementById('detail-coords').textContent = `${f.lat.toFixed(3)}°, ${f.lon.toFixed(3)}°`;
   document.getElementById('detail-squawk').textContent = `SQK ${f.squawk || '----'}`;
-  document.getElementById('detail-aircraft-label').textContent = f.aircraftLabel || f.aircraftType;
+  document.getElementById('detail-aircraft-label').textContent = f.aircraftLabel || 'Live Transponder';
   document.getElementById('detail-icao').textContent = f.icao24.toUpperCase();
   document.getElementById('detail-reg').textContent = f.registration || '---';
   document.getElementById('detail-country').textContent = f.originCountry || '---';
 
   followBtn.classList.toggle('active', state.followSelected);
   followBtn.textContent = state.followSelected ? '추적 해제' : '카메라 추적';
-  renderAltitudeProfileSvg(f);
+  renderLiveAltitudeChart(f);
 }
 
-function updateSourceStatus(payload) {
-  state.activeSource = payload.activeSource || 'simulation';
-  state.fallbackReason = payload.fallbackReason || null;
+function handleLivePayload(payload) {
+  if (!payload || payload.skipped) return;
 
-  statusDotEl.className = 'status-dot';
-  if (state.activeSource === 'opensky') {
-    sourceLabelEl.textContent = 'OpenSky LIVE ADS-B';
-  } else {
-    statusDotEl.classList.add('sim');
-    sourceLabelEl.textContent = '글로벌 실시간 시뮬레이션';
+  if (payload.ok) {
+    state.activeSource = payload.activeSource || state.provider;
+    state.rawFlights = payload.flights || [];
+    state.lastSyncMs = performance.now();
+    state.lastUpdatedAt = payload.updatedAt || Date.now();
+    recordTrackPoints(state.rawFlights);
+
+    statusDotEl.className = 'status-dot';
+    sourceLabelEl.textContent = state.activeSource === 'adsbfi'
+      ? 'LIVE · adsb.fi (화면 반경 250NM)'
+      : 'LIVE · OpenSky Network (전 세계)';
+
+    if (payload.notice) {
+      liveNoticeEl.textContent = payload.notice;
+      liveNoticeEl.classList.remove('hidden');
+    } else {
+      liveNoticeEl.classList.add('hidden');
+    }
+    applySearchFilter();
+    return;
   }
 
-  if (state.fallbackReason && state.mode !== 'simulation') {
-    statusDotEl.classList.add('warn');
-    fallbackNoticeEl.textContent = `OpenSky 실시간 피드 지연/제한으로 시뮬레이션 전환됨 (${state.fallbackReason})`;
-    fallbackNoticeEl.classList.remove('hidden');
-  } else {
-    fallbackNoticeEl.classList.add('hidden');
-  }
+  // Strictly real-time ONLY: never inject simulated aircraft on error.
+  statusDotEl.className = state.rawFlights.length > 0 ? 'status-dot warn' : 'status-dot error';
+  sourceLabelEl.textContent = state.rawFlights.length > 0
+    ? 'LIVE (최근 수신 위치 유지 중)'
+    : '실시간 ADS-B 연결 대기 중';
+  liveNoticeEl.textContent = payload.error || '실시간 ADS-B 데이터를 가져오지 못했습니다. 잠시 후 자동 재시도합니다.';
+  liveNoticeEl.classList.remove('hidden');
 }
 
 function stopConnections() {
@@ -293,58 +333,60 @@ function stopConnections() {
     state.eventSource.close();
     state.eventSource = null;
   }
-  if (state.staticPollTimer) {
-    clearInterval(state.staticPollTimer);
-    state.staticPollTimer = null;
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
   }
 }
 
-async function runStaticTick(mode) {
-  const payload = await browserEngine.resolve(mode);
-  state.rawFlights = payload.flights || [];
-  state.lastServerSyncMs = performance.now();
-  updateSourceStatus(payload);
-  applySearchFilter();
+async function fetchDirectOnce(force = false) {
+  const lat = Number(globe.targetLat.toFixed(3));
+  const lon = Number(((((globe.targetLon + 180) % 360) + 360) % 360 - 180).toFixed(3));
+  const payload = await liveClient.fetchLive({
+    provider: state.provider,
+    lat,
+    lon,
+    force
+  });
+  handleLivePayload(payload);
 }
 
-function connectStream(mode) {
+function connectLiveFeed(force = false) {
   stopConnections();
+  statusDotEl.className = 'status-dot warn';
+  sourceLabelEl.textContent = '실시간 ADS-B 수신 중...';
+
+  const lat = Number(globe.targetLat.toFixed(3));
+  const lon = Number(((((globe.targetLon + 180) % 360) + 360) % 360 - 180).toFixed(3));
 
   if (state.backendAvailable) {
-    const es = new EventSource(`./api/stream?mode=${encodeURIComponent(mode)}`);
+    const qs = new URLSearchParams({
+      provider: state.provider,
+      lat: String(lat),
+      lon: String(lon)
+    });
+    const es = new EventSource(`./api/stream?${qs.toString()}`);
     state.eventSource = es;
 
     es.addEventListener('flights', (evt) => {
       try {
-        const payload = JSON.parse(evt.data);
-        state.rawFlights = payload.flights || [];
-        state.lastServerSyncMs = performance.now();
-        updateSourceStatus(payload);
-        applySearchFilter();
+        handleLivePayload(JSON.parse(evt.data));
       } catch {
-        // Ignore malformed chunk
+        // Ignore malformed frame
       }
     });
 
     es.onerror = () => {
-      sourceLabelEl.textContent = '재연결 중...';
       statusDotEl.className = 'status-dot warn';
+      sourceLabelEl.textContent = '실시간 스트림 재연결 중...';
     };
     return;
   }
 
-  // Static hosting (GitHub Pages): render simulation immediately so globe is alive on frame 1,
-  // then poll OpenSky ADS-B / simulation on interval.
-  if (mode !== 'live') {
-    const initialSim = browserEngine.getSimulatedSnapshot();
-    state.rawFlights = initialSim;
-    state.lastServerSyncMs = performance.now();
-    updateSourceStatus({ mode, activeSource: 'simulation', fallbackReason: null });
-    applySearchFilter();
-  }
-
-  runStaticTick(mode);
-  state.staticPollTimer = setInterval(() => runStaticTick(state.mode), 3000);
+  // Static hosting (GitHub Pages): direct browser live ADS-B polling
+  fetchDirectOnce(force);
+  const intervalMs = state.provider === 'adsbfi' ? 6000 : 20000;
+  state.pollTimer = setInterval(() => fetchDirectOnce(false), intervalMs);
 }
 
 async function detectBackend() {
@@ -365,29 +407,28 @@ async function loadAirports() {
     try {
       const res = await fetch('./api/airports');
       const data = await res.json();
-      state.airports = data.airports || STATIC_AIRPORTS;
-      globe.setAirports(state.airports);
+      globe.setAirports(data.airports || STATIC_AIRPORTS);
       return;
     } catch {
-      // Fall back to bundled airport catalog
+      // Fallback to static airport reference coordinates
     }
   }
-  state.airports = STATIC_AIRPORTS;
   globe.setAirports(STATIC_AIRPORTS);
 }
 
 function bindUI() {
-  // Mode buttons
-  document.querySelectorAll('.mode-btn').forEach((btn) => {
+  // Real-time ADS-B source buttons (OpenSky global vs adsb.fi local 250NM)
+  document.querySelectorAll('.mode-btn[data-provider]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.mode-btn').forEach((b) => b.classList.remove('active'));
+      document.querySelectorAll('.mode-btn[data-provider]').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
-      state.mode = btn.dataset.mode;
-      connectStream(state.mode);
+      state.provider = btn.dataset.provider;
+      connectLiveFeed(true);
     });
   });
 
-  // Search box
+  refreshBtn.addEventListener('click', () => connectLiveFeed(true));
+
   searchInputEl.addEventListener('input', (e) => {
     state.searchQuery = e.target.value;
     applySearchFilter();
@@ -408,7 +449,7 @@ function bindUI() {
     setPanelMode('none');
   });
 
-  // Region camera presets
+  // Region camera presets — when in adsb.fi mode, also immediately fetch live planes for that region
   document.querySelectorAll('#region-presets .chip-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('#region-presets .chip-btn').forEach((b) => b.classList.remove('active'));
@@ -416,10 +457,12 @@ function bindUI() {
       state.followSelected = false;
       globe.setFollowSelected(false);
       globe.flyTo(Number(btn.dataset.lat), Number(btn.dataset.lon), Number(btn.dataset.zoom));
+      if (state.provider === 'adsbfi' || state.activeSource === 'adsbfi') {
+        setTimeout(() => connectLiveFeed(true), 150);
+      }
     });
   });
 
-  // Globe display toggles
   const bindToggle = (id, optKey) => {
     const el = document.getElementById(id);
     el.addEventListener('click', () => {
@@ -440,7 +483,6 @@ function bindUI() {
     globe.targetZoom = Math.max(0.85, globe.targetZoom / 1.32);
   });
 
-  // Follow & center buttons
   followBtn.addEventListener('click', () => {
     if (!state.selectedIcao) return;
     state.followSelected = !state.followSelected;
@@ -461,19 +503,23 @@ function bindUI() {
 }
 
 function updateClock() {
-  const now = new Date();
-  utcClockEl.textContent = `${now.toISOString().slice(11, 19)} UTC`;
+  utcClockEl.textContent = `${new Date().toISOString().slice(11, 19)} UTC`;
+  if (state.panelMode === 'detail' && state.selectedIcao) {
+    const f = state.rawFlights.find((item) => item.icao24 === state.selectedIcao);
+    if (f) {
+      document.getElementById('detail-contact-age').textContent = formatAge(f.lastContact);
+    }
+  }
 }
 
 function animate(now) {
-  const elapsedSec = (now - state.lastServerSyncMs) / 1000;
-  const smoothFlights = state.flights.map((f) => extrapolateFlight(f, elapsedSec));
+  const elapsedSec = (now - state.lastSyncMs) / 1000;
+  const smoothFlights = state.flights.map((f) => extrapolateLiveFlight(f, elapsedSec));
   globe.setFlights(smoothFlights);
   globe.render(now);
   requestAnimationFrame(animate);
 }
 
-// Bootstrap
 async function init() {
   bindUI();
   updateClock();
@@ -482,7 +528,7 @@ async function init() {
 
   state.backendAvailable = await detectBackend();
   await loadAirports();
-  connectStream(state.mode);
+  connectLiveFeed(true);
 }
 
 init();

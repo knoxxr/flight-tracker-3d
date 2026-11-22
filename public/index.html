@@ -3,38 +3,38 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AeroGlobe 3D — 전 세계 실시간 항공기 추적기</title>
-  <meta name="description" content="전 세계 항공기의 실시간 위치를 3D 지구본 위에서 추적하고 고도, 속도, 항로, 기체 정보를 확인하는 실시간 항공 추적 시스템" />
+  <title>AeroGlobe 3D — 전 세계 실시간 ADS-B 항공기 추적기</title>
+  <meta name="description" content="OpenSky Network와 adsb.fi의 100% 실시간 ADS-B 트랜스폰더 데이터를 3D 지구본 위에 시각화하는 글로벌 항공기 추적기" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <main class="app-shell" id="app-shell">
     <!-- Fullscreen 3D Globe Canvas -->
     <div class="globe-stage" id="globe-stage">
-      <canvas id="globe-canvas" aria-label="전 세계 항공기 3D 실시간 지도"></canvas>
+      <canvas id="globe-canvas" aria-label="전 세계 실시간 ADS-B 항공기 3D 지도"></canvas>
     </div>
 
     <!-- Top-Left Command & Search Bar -->
-    <header class="hud-top-left" aria-label="항공기 검색 및 상태">
+    <header class="hud-top-left" aria-label="실시간 항공기 검색 및 수신 상태">
       <div class="brand-row">
         <div class="brand-title-group">
           <h1 class="brand-title">AeroGlobe 3D</h1>
           <span class="utc-clock" id="utc-clock">--:--:-- UTC</span>
         </div>
-        <div class="mode-switch" role="group" aria-label="데이터 소스 선택">
-          <button type="button" class="mode-btn active" id="mode-auto" data-mode="auto" title="OpenSky 실시간 우선, 불가 시 시뮬레이션 자동 전환">AUTO</button>
-          <button type="button" class="mode-btn" id="mode-live" data-mode="live" title="OpenSky Network 실시간 ADS-B">LIVE</button>
-          <button type="button" class="mode-btn" id="mode-sim" data-mode="simulation" title="글로벌 대권 항로 물리 시뮬레이션">SIM</button>
+        <div class="mode-switch" role="group" aria-label="실시간 ADS-B 수신 피드 선택">
+          <button type="button" class="mode-btn active" id="provider-opensky" data-provider="opensky" title="OpenSky Network 전 세계 실시간 ADS-B">전 세계</button>
+          <button type="button" class="mode-btn" id="provider-adsbfi" data-provider="adsbfi" title="adsb.fi 현재 화면 중심 반경 250NM 실시간 ADS-B">화면 주변</button>
+          <button type="button" class="mode-btn" id="refresh-live-btn" title="실시간 ADS-B 즉시 새로고침" aria-label="즉시 새로고침">↻</button>
         </div>
       </div>
 
       <div class="status-strip">
         <span class="source-indicator" id="source-indicator">
           <span class="status-dot" id="status-dot"></span>
-          <span id="source-label">연결 중...</span>
+          <span id="source-label">실시간 ADS-B 연결 중...</span>
         </span>
         <span class="metric-inline">
-          추적 중 <strong id="flight-count">0</strong>대
+          실시간 <strong id="flight-count">0</strong>대
         </span>
       </div>
 
@@ -42,20 +42,20 @@
         <input
           type="search"
           id="flight-search"
-          placeholder="편명, 항공사, 공항코드 (예: KAL, ICN, LHR, JFK)"
+          placeholder="편명, 등록번호, ICAO24, 국적, 기종 검색"
           autocomplete="off"
-          aria-label="항공편 검색"
+          aria-label="실시간 항공기 검색"
         />
-        <button type="button" class="list-toggle-btn" id="toggle-list-btn" title="항공편 목록 열기">목록</button>
+        <button type="button" class="list-toggle-btn" id="toggle-list-btn" title="실시간 항공편 목록 열기">목록</button>
       </div>
 
-      <p class="fallback-notice hidden" id="fallback-notice"></p>
+      <p class="fallback-notice hidden" id="live-notice"></p>
     </header>
 
     <!-- Bottom-Left Camera Presets & Layer Toggles -->
     <nav class="hud-bottom-left" aria-label="지역 카메라 및 지도 레이어">
       <div class="preset-group" id="region-presets">
-        <button type="button" class="chip-btn active" data-lat="32" data-lon="126" data-zoom="1.35">한국 · 동아시아</button>
+        <button type="button" class="chip-btn active" data-lat="36" data-lon="128" data-zoom="1.55">한국 · 동아시아</button>
         <button type="button" class="chip-btn" data-lat="20" data-lon="20" data-zoom="1.05">전 세계</button>
         <button type="button" class="chip-btn" data-lat="49" data-lon="10" data-zoom="1.95">유럽</button>
         <button type="button" class="chip-btn" data-lat="38" data-lon="-96" data-zoom="1.65">북미</button>
@@ -64,7 +64,7 @@
         <button type="button" class="chip-btn" data-lat="34" data-lon="-168" data-zoom="1.25">태평양</button>
       </div>
       <div class="layer-group">
-        <button type="button" class="toggle-btn active" id="toggle-rotate">자동 회전</button>
+        <button type="button" class="toggle-btn" id="toggle-rotate">자동 회전</button>
         <button type="button" class="toggle-btn active" id="toggle-daynight">밤/낮 그림자</button>
         <button type="button" class="toggle-btn active" id="toggle-trails">비행 궤적</button>
         <button type="button" class="toggle-btn active" id="toggle-airports">공항 허브</button>
@@ -73,8 +73,8 @@
       </div>
     </nav>
 
-    <!-- Bottom-Right Altitude Color Legend -->
-    <aside class="hud-bottom-right" aria-label="고도별 색상 범례">
+    <!-- Bottom-Right Altitude Color Legend & Attribution -->
+    <aside class="hud-bottom-right" aria-label="고도별 색상 범례 및 데이터 출처">
       <span class="legend-title">고도 (FT)</span>
       <div class="legend-items">
         <span class="legend-item"><i class="swatch" style="background:#4ade80"></i>&lt;15k</span>
@@ -82,50 +82,48 @@
         <span class="legend-item"><i class="swatch" style="background:#38bdf8"></i>28-37k</span>
         <span class="legend-item"><i class="swatch" style="background:#fbbf24"></i>37k+</span>
       </div>
+      <span class="legend-credit">
+        <a href="https://opensky-network.org" target="_blank" rel="noopener noreferrer">OpenSky</a> ·
+        <a href="https://adsb.fi" target="_blank" rel="noopener noreferrer">adsb.fi</a>
+      </span>
     </aside>
 
-    <!-- Right Slide-in Panel: Flight List OR Flight Inspector -->
-    <aside class="hud-right hidden" id="side-panel" aria-label="항공기 상세 정보 및 목록">
+    <!-- Right Slide-in Panel: Flight List OR Live ADS-B Flight Inspector -->
+    <aside class="hud-right hidden" id="side-panel" aria-label="실시간 항공기 상세 정보 및 목록">
       <!-- Flight List View -->
       <section id="flight-list-view" class="panel-section hidden">
         <div class="panel-header">
           <div>
-            <h2 class="panel-title">실시간 항공편</h2>
-            <p class="panel-subtitle" id="list-subtitle">상위 항공편 표시 중</p>
+            <h2 class="panel-title">실시간 비행 중 항공기</h2>
+            <p class="panel-subtitle" id="list-subtitle">실시간 수신 대기 중</p>
           </div>
           <button type="button" class="icon-close-btn" id="close-list-btn" aria-label="닫기">×</button>
         </div>
         <div class="flight-list" id="flight-list-container"></div>
       </section>
 
-      <!-- Selected Flight Telemetry Inspector -->
+      <!-- Selected Flight Live ADS-B Telemetry Inspector -->
       <section id="flight-detail-view" class="panel-section hidden">
         <div class="panel-header">
           <div>
             <div class="detail-callsign-row">
               <h2 class="detail-callsign" id="detail-callsign">---</h2>
-              <span class="detail-type-tag" id="detail-aircraft-type">---</span>
+              <span class="detail-type-tag" id="detail-aircraft-type">ADS-B</span>
             </div>
             <p class="panel-subtitle" id="detail-airline">---</p>
           </div>
           <button type="button" class="icon-close-btn" id="close-detail-btn" aria-label="닫기">×</button>
         </div>
 
-        <!-- Route Progress Banner -->
-        <div class="route-banner" id="detail-route-banner">
-          <div class="route-endpoint">
-            <span class="route-iata" id="detail-origin">---</span>
-            <span class="route-name" id="detail-origin-name">출발지</span>
+        <!-- Live Transponder Status Banner -->
+        <div class="live-signal-banner">
+          <div>
+            <span class="tele-label">LIVE ADS-B SOURCE</span>
+            <strong class="tele-value mono-sm" id="detail-source">OpenSky Network</strong>
           </div>
-          <div class="route-line-wrap">
-            <div class="route-progress-track">
-              <div class="route-progress-fill" id="detail-progress-fill" style="width:0%"></div>
-            </div>
-            <span class="route-meta" id="detail-eta">---</span>
-          </div>
-          <div class="route-endpoint right">
-            <span class="route-iata" id="detail-dest">---</span>
-            <span class="route-name" id="detail-dest-name">도착지</span>
+          <div class="right-align">
+            <span class="tele-label">LAST SIGNAL</span>
+            <strong class="tele-value mono-sm" id="detail-contact-age">방금 수신</strong>
           </div>
         </div>
 
@@ -142,7 +140,7 @@
             <span class="tele-sub" id="detail-speed-kmh">---</span>
           </div>
           <div class="telemetry-cell">
-            <span class="tele-label">방위각 (HEADING)</span>
+            <span class="tele-label">진방위 (TRUE TRACK)</span>
             <strong class="tele-value" id="detail-heading">---</strong>
             <span class="tele-sub" id="detail-vrate">---</span>
           </div>
@@ -153,11 +151,11 @@
           </div>
         </div>
 
-        <!-- Altitude Profile Mini Visualization -->
+        <!-- Live Altitude History Mini Chart -->
         <div class="profile-box" id="detail-profile-box">
           <div class="profile-header">
-            <span>비행 고도 프로파일</span>
-            <span id="detail-aircraft-label" class="muted">---</span>
+            <span>실시간 수신 고도 추이</span>
+            <span id="detail-aircraft-label" class="muted">Live Transponder</span>
           </div>
           <svg id="altitude-profile-svg" viewBox="0 0 280 64" class="profile-svg" aria-hidden="true"></svg>
         </div>

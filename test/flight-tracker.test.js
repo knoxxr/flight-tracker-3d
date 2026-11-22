@@ -1,39 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  GlobalFlightSimulator,
-  greatCircleDistanceKm,
-  slerpLatLon,
-  initialBearingDeg
-} from '../src/simulator.js';
-import { parseOpenSkyStateVector, deadReckonFlight } from '../src/opensky.js';
+  parseOpenSkyStateVector,
+  parseAdsbFiAircraft,
+  deadReckonFlight
+} from '../src/opensky.js';
 import { createAppServer } from '../src/server.js';
-
-test('greatCircleDistanceKm computes accurate ICN -> JFK distance', () => {
-  // Incheon (37.4602, 126.4407) to JFK (40.6413, -73.7781) is ~11,086 km
-  const dist = greatCircleDistanceKm(37.4602, 126.4407, 40.6413, -73.7781);
-  assert.ok(dist > 10900 && dist < 11300, `Unexpected ICN-JFK distance: ${dist}`);
-});
-
-test('slerpLatLon interpolates endpoints and midpoint cleanly', () => {
-  const start = slerpLatLon(37.46, 126.44, 35.77, 140.39, 0);
-  const end = slerpLatLon(37.46, 126.44, 35.77, 140.39, 1);
-  const mid = slerpLatLon(37.46, 126.44, 35.77, 140.39, 0.5);
-
-  assert.ok(Math.abs(start.lat - 37.46) < 0.01);
-  assert.ok(Math.abs(end.lon - 140.39) < 0.01);
-  assert.ok(mid.lon > 130 && mid.lon < 137);
-});
-
-test('initialBearingDeg returns expected cardinal bearings', () => {
-  const north = initialBearingDeg(0, 0, 10, 0);
-  const east = initialBearingDeg(0, 0, 0, 10);
-  const south = initialBearingDeg(10, 0, 0, 0);
-
-  assert.ok(Math.abs(north - 0) < 0.1 || Math.abs(north - 360) < 0.1);
-  assert.ok(Math.abs(east - 90) < 0.1);
-  assert.ok(Math.abs(south - 180) < 0.1);
-});
 
 test('parseOpenSkyStateVector normalizes valid 17-element OpenSky state vector', () => {
   const raw = [
@@ -57,7 +29,44 @@ test('parseOpenSkyStateVector rejects entries missing coordinates', () => {
   assert.equal(parseOpenSkyStateVector([]), null);
 });
 
-test('deadReckonFlight advances airborne aircraft position along heading', () => {
+test('parseAdsbFiAircraft normalizes adsb.fi v3 live aircraft object', () => {
+  const ac = {
+    hex: '71bf01',
+    flight: 'AAR201  ',
+    r: 'HL8382',
+    t: 'A359',
+    desc: 'AIRBUS A350-900',
+    lat: 37.51,
+    lon: 126.82,
+    alt_baro: 35000,
+    gs: 482,
+    track: 85.4,
+    baro_rate: 64,
+    squawk: '2140',
+    seen: 2
+  };
+  const parsed = parseAdsbFiAircraft(ac, 1700000000);
+
+  assert.ok(parsed);
+  assert.equal(parsed.icao24, '71bf01');
+  assert.equal(parsed.callsign, 'AAR201');
+  assert.equal(parsed.registration, 'HL8382');
+  assert.equal(parsed.aircraftType, 'A359');
+  assert.equal(parsed.altitudeFt, 35000);
+  assert.equal(parsed.speedKts, 482);
+  assert.equal(parsed.source, 'adsbfi');
+  assert.equal(parsed.onGround, false);
+});
+
+test('parseAdsbFiAircraft flags ground aircraft accurately', () => {
+  const ac = { hex: 'a00001', lat: 37.46, lon: 126.44, alt_baro: 'ground' };
+  const parsed = parseAdsbFiAircraft(ac, 1700000000);
+  assert.ok(parsed);
+  assert.equal(parsed.onGround, true);
+  assert.equal(parsed.altitudeFt, 0);
+});
+
+test('deadReckonFlight advances airborne aircraft position along true track', () => {
   const base = {
     lat: 37.0,
     lon: 127.0,
@@ -73,22 +82,52 @@ test('deadReckonFlight advances airborne aircraft position along heading', () =>
   assert.ok(Math.abs(next.lat - base.lat) < 0.05);
 });
 
-test('GlobalFlightSimulator produces realistic global fleet telemetry', () => {
-  const sim = new GlobalFlightSimulator();
-  const snap = sim.getSnapshot(1700000000000);
-  assert.ok(snap.length >= 250, `Expected at least 250 flights, got ${snap.length}`);
+test('HTTP server serves live-only flights, detail, search, airports, and never fabricates simulated data on feed outage', async () => {
+  const mockLiveFlights = [
+    {
+      icao24: '71be20',
+      callsign: 'KAL081',
+      originCountry: 'Republic of Korea',
+      aircraftType: 'B77W',
+      aircraftLabel: 'Boeing 777-300ER',
+      registration: 'HL8008',
+      squawk: '2415',
+      lat: 37.46,
+      lon: 126.44,
+      altitudeM: 10668,
+      altitudeFt: 35000,
+      speedMs: 250,
+      speedKts: 486,
+      speedKmh: 900,
+      heading: 42,
+      verticalRateMs: 0,
+      verticalRateFpm: 0,
+      onGround: false,
+      source: 'opensky',
+      lastContact: Math.floor(Date.now() / 1000)
+    }
+  ];
 
-  const sample = snap[0];
-  assert.ok(sample.icao24 && sample.callsign);
-  assert.ok(sample.lat >= -90 && sample.lat <= 90);
-  assert.ok(sample.lon >= -180 && sample.lon <= 180);
-  assert.ok(sample.altitudeFt >= 500 && sample.altitudeFt <= 45000);
-  assert.ok(sample.speedKts >= 150 && sample.speedKts <= 650);
-  assert.ok(sample.origin && sample.destination);
-});
+  let failFeed = false;
+  const mockAdsbClient = {
+    async fetchLiveFlights() {
+      if (failFeed) {
+        return { ok: false, source: 'opensky', error: 'HTTP 429', flights: [] };
+      }
+      return {
+        ok: true,
+        source: 'opensky',
+        updatedAt: Date.now(),
+        totalRaw: 1,
+        flights: mockLiveFlights
+      };
+    },
+    getStatus() {
+      return { authenticated: false, lastSuccessAt: null, lastError: null, cachedCount: 1, backoffActive: false };
+    }
+  };
 
-test('HTTP server serves flights, detail, airports, status, and static frontend', async () => {
-  const server = createAppServer({ mode: 'simulation' });
+  const server = createAppServer({ adsbClient: mockAdsbClient });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -97,35 +136,30 @@ test('HTTP server serves flights, detail, airports, status, and static frontend'
     const healthRes = await fetch(`${baseUrl}/api/health`);
     assert.equal(healthRes.status, 200);
     const health = await healthRes.json();
-    assert.equal(health.status, 'ok');
+    assert.equal(health.mode, 'live-only');
 
-    const airportsRes = await fetch(`${baseUrl}/api/airports`);
-    assert.equal(airportsRes.status, 200);
-    const airportsData = await airportsRes.json();
-    assert.ok(airportsData.count >= 50);
-
-    const flightsRes = await fetch(`${baseUrl}/api/flights?mode=simulation`);
+    const flightsRes = await fetch(`${baseUrl}/api/flights`);
     assert.equal(flightsRes.status, 200);
     const flightsData = await flightsRes.json();
-    assert.equal(flightsData.activeSource, 'simulation');
-    assert.ok(flightsData.count >= 250);
+    assert.equal(flightsData.ok, true);
+    assert.equal(flightsData.activeSource, 'opensky');
+    assert.equal(flightsData.count, 1);
+    assert.equal(flightsData.flights[0].callsign, 'KAL081');
 
-    const firstIcao = flightsData.flights[0].icao24;
-    const detailRes = await fetch(`${baseUrl}/api/flights/${firstIcao}?mode=simulation`);
+    const detailRes = await fetch(`${baseUrl}/api/flights/71be20`);
     assert.equal(detailRes.status, 200);
     const detailData = await detailRes.json();
-    assert.equal(detailData.flight.icao24, firstIcao);
+    assert.equal(detailData.flight.icao24, '71be20');
+    assert.ok(Array.isArray(detailData.track));
 
-    const searchRes = await fetch(`${baseUrl}/api/flights?mode=simulation&q=ICN`);
-    assert.equal(searchRes.status, 200);
-    const searchData = await searchRes.json();
-    assert.ok(searchData.count > 0);
-    assert.ok(searchData.flights.every((f) => f.origin === 'ICN' || f.destination === 'ICN'));
-
-    const indexRes = await fetch(`${baseUrl}/`);
-    assert.equal(indexRes.status, 200);
-    const html = await indexRes.text();
-    assert.ok(html.includes('AeroGlobe 3D'));
+    // When live feed fails, server MUST return 0 flights (zero simulated fallback)
+    failFeed = true;
+    const outageRes = await fetch(`${baseUrl}/api/flights`);
+    assert.equal(outageRes.status, 200);
+    const outageData = await outageRes.json();
+    assert.equal(outageData.ok, false);
+    assert.equal(outageData.count, 0);
+    assert.deepEqual(outageData.flights, []);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

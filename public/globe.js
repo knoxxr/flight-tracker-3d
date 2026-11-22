@@ -464,12 +464,16 @@ export class Globe3D {
     ctx.arc(cx, cy, R, 0, Math.PI * 2);
     ctx.stroke();
 
-    // 8. Selected Flight 3D Great Circle Arc (drawn above surface, can rise above limb!)
+    // 8. Selected Flight 3D Live Track & Projected Heading Vector (or Route Arc if available)
     const selectedFlight = this.selectedIcao
       ? this.flights.find((f) => f.icao24 === this.selectedIcao)
       : null;
-    if (selectedFlight && selectedFlight.originCoords && selectedFlight.destCoords) {
-      this._drawSelectedRouteArc(ctx, selectedFlight, mat, cx, cy, R, isLight);
+    if (selectedFlight) {
+      if (selectedFlight.originCoords && selectedFlight.destCoords) {
+        this._drawSelectedRouteArc(ctx, selectedFlight, mat, cx, cy, R, isLight);
+      } else {
+        this._drawLiveSelectedTrack(ctx, selectedFlight, mat, cx, cy, R, isLight);
+      }
     }
 
     // 9. Aircraft Markers (depth-sorted, elevated in 3D space)
@@ -768,6 +772,71 @@ export class Globe3D {
         ctx.fillText(ep.code, p.x + 12, p.y + 0.5);
       }
     }
+  }
+
+  _drawLiveSelectedTrack(ctx, flight, mat, cx, cy, R, isLight) {
+    // 1. Draw actual recorded live ADS-B track points if we have >= 2 samples
+    const track = Array.isArray(flight.track) ? flight.track : [];
+    if (track.length >= 2) {
+      ctx.save();
+      ctx.strokeStyle = isLight ? '#0284c7' : '#38bdf8';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      let penDown = false;
+      for (const pt of track) {
+        const lift = 1 + 0.008 + Math.min(1.2, (pt.altFt || 0) / 42000) * 0.036;
+        const p = this._projectVec(latLonToVec3(pt.lat, pt.lon), mat, cx, cy, R, lift);
+        if (p.z > -0.02 || Math.hypot(p.rx * lift, p.ry * lift) > 1.001) {
+          if (!penDown) {
+            ctx.moveTo(p.x, p.y);
+            penDown = true;
+          } else {
+            ctx.lineTo(p.x, p.y);
+          }
+        } else {
+          penDown = false;
+        }
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 2. Draw forward projected true-track dashed arc (~320 km ahead)
+    const speedKts = Math.max(120, flight.speedKts || 350);
+    const totalDistKm = Math.min(480, Math.max(160, speedKts * 0.7));
+    const lift = 1 + 0.008 + Math.min(1.2, (flight.altitudeFt || 0) / 42000) * 0.036;
+    const bearing = (flight.heading || 0) * DEG2RAD;
+    const lat1 = flight.lat * DEG2RAD;
+    const lon1 = flight.lon * DEG2RAD;
+
+    ctx.save();
+    ctx.strokeStyle = isLight ? 'rgba(2, 132, 199, 0.6)' : 'rgba(250, 204, 21, 0.65)';
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    let penDown = false;
+    for (let i = 0; i <= 20; i++) {
+      const angDist = ((totalDistKm * (i / 20)) / 6371.0088);
+      const sinLat2 = Math.sin(lat1) * Math.cos(angDist) + Math.cos(lat1) * Math.sin(angDist) * Math.cos(bearing);
+      const lat2 = Math.asin(Math.max(-1, Math.min(1, sinLat2)));
+      const lon2 = lon1 + Math.atan2(
+        Math.sin(bearing) * Math.sin(angDist) * Math.cos(lat1),
+        Math.cos(angDist) - Math.sin(lat1) * Math.sin(lat2)
+      );
+      const p = this._projectVec(latLonToVec3(lat2 * RAD2DEG, lon2 * RAD2DEG), mat, cx, cy, R, lift);
+      if (p.z > -0.02 || Math.hypot(p.rx * lift, p.ry * lift) > 1.001) {
+        if (!penDown) {
+          ctx.moveTo(p.x, p.y);
+          penDown = true;
+        } else {
+          ctx.lineTo(p.x, p.y);
+        }
+      } else {
+        penDown = false;
+      }
+    }
+    ctx.stroke();
+    ctx.restore();
   }
 
   _drawFlights(ctx, mat, cx, cy, R, isLight, now) {
