@@ -15,7 +15,7 @@
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", Roboto, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Pretendard", "Noto Sans CJK KR", "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
@@ -92,7 +92,7 @@ body {
 .hud-top-left {
   top: 16px;
   left: 16px;
-  width: 344px;
+  width: 376px;
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
@@ -103,21 +103,23 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
 }
 
 .brand-title-group {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
+  min-width: 0;
 }
 
 .brand-title {
   margin: 0;
-  font-size: 16px;
+  font-size: 15.5px;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--text-primary);
+  white-space: nowrap;
 }
 
 .utc-clock {
@@ -125,6 +127,7 @@ body {
   font-size: 11px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .mode-switch {
@@ -134,6 +137,7 @@ body {
   border-radius: var(--radius-sm);
   padding: 2px;
   gap: 2px;
+  flex-shrink: 0;
 }
 
 .mode-btn {
@@ -141,11 +145,12 @@ body {
   background: transparent;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   padding: 4px 7px;
   border-radius: 4px;
   cursor: pointer;
+  white-space: nowrap;
   transition: background 0.15s ease, color 0.15s ease;
 }
 
@@ -760,12 +765,16 @@ body {
   }
 
   .brand-title {
-    font-size: 14.5px;
+    font-size: 13.5px;
+  }
+
+  .top-right-controls {
+    gap: 4px;
   }
 
   .mode-btn {
-    padding: 5px 8px;
-    font-size: 11px;
+    padding: 4px 6px;
+    font-size: 10.5px;
   }
 
   .mobile-only-btn {
@@ -775,9 +784,9 @@ body {
     border: 1px solid var(--border-subtle);
     background: rgba(20, 38, 62, 0.72);
     color: var(--text-primary);
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 600;
-    padding: 5px 9px;
+    padding: 4px 7px;
     border-radius: var(--radius-sm);
     cursor: pointer;
     white-space: nowrap;

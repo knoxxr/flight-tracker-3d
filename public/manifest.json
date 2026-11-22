@@ -1,0 +1,24 @@
+{
+  "name": "AeroGlobe 3D — 전 세계 실시간 항공기 추적기",
+  "short_name": "AeroGlobe 3D",
+  "description": "전 세계 실제 비행 중인 항공기의 실시간 ADS-B 위치를 3D 지구본 위에 시각화하는 항공 추적 앱",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#040b15",
+  "theme_color": "#040b15",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

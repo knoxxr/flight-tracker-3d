@@ -4,8 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#040b15" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>AeroGlobe 3D — 전 세계 실시간 ADS-B 항공기 추적기</title>
   <meta name="description" content="OpenSky Network와 adsb.fi의 100% 실시간 ADS-B 트랜스폰더 데이터를 3D 지구본 위에 시각화하는 글로벌 항공기 추적기" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png" />
+  <link rel="manifest" href="./manifest.json" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -24,7 +29,7 @@
         </div>
         <div class="top-right-controls">
           <div class="mode-switch" role="group" aria-label="실시간 ADS-B 수신 피드 선택">
-            <button type="button" class="mode-btn active" id="provider-opensky" data-provider="opensky" title="OpenSky Network 전 세계 실시간 ADS-B">전 세계</button>
+            <button type="button" class="mode-btn active" id="provider-opensky" data-provider="opensky" title="OpenSky Network 전 세계 실시간 ADS-B">전세계</button>
             <button type="button" class="mode-btn" id="provider-adsbfi" data-provider="adsbfi" title="adsb.fi 현재 화면 중심 반경 250NM 실시간 ADS-B">주변</button>
             <button type="button" class="mode-btn" id="refresh-live-btn" title="실시간 ADS-B 즉시 새로고침" aria-label="즉시 새로고침">↻</button>
           </div>
