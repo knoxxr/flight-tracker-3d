@@ -138,6 +138,12 @@ test('HTTP server serves live-only flights, detail, search, airports, and never 
     const health = await healthRes.json();
     assert.equal(health.mode, 'live-only');
 
+    const debugRes = await fetch(`${baseUrl}/api/debug`);
+    assert.equal(debugRes.status, 200);
+    const debugData = await debugRes.json();
+    assert.equal(debugData.mode, 'live-only');
+    assert.ok(debugData.upstream);
+
     const flightsRes = await fetch(`${baseUrl}/api/flights`);
     assert.equal(flightsRes.status, 200);
     const flightsData = await flightsRes.json();

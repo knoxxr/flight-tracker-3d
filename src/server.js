@@ -126,10 +126,11 @@ export function createAppServer(options = {}) {
         return sendJson(res, 200, { status: 'ok', mode: 'live-only', uptimeSec: Math.round(process.uptime()) });
       }
 
-      if (pathname === '/api/status') {
+      if (pathname === '/api/status' || pathname === '/api/debug') {
         return sendJson(res, 200, {
           mode: 'live-only',
-          opensky: adsbClient.getStatus(),
+          nodeVersion: process.version,
+          upstream: adsbClient.getStatus(),
           airportsCount: AIRPORTS.length,
           serverTimeUtc: new Date().toISOString()
         });
@@ -178,8 +179,11 @@ export function createAppServer(options = {}) {
         res.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform',
-          Connection: 'keep-alive'
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no'
         });
+        if (typeof res.flushHeaders === 'function') res.flushHeaders();
+        res.write(': connected\n\n');
 
         const client = { res, provider, lat, lon, dist };
         sseClients.add(client);
@@ -231,6 +235,7 @@ export function createAppServer(options = {}) {
   });
 
   server.on('close', () => {
+    if (typeof adsbClient.stop === 'function') adsbClient.stop();
     for (const c of sseClients) {
       if (!c.res.writableEnded) c.res.end();
     }

@@ -269,7 +269,9 @@ function renderFlightDetail() {
   document.getElementById('detail-callsign').textContent = f.callsign;
   document.getElementById('detail-aircraft-type').textContent = f.aircraftType || 'ADS-B';
   document.getElementById('detail-airline').textContent = f.originCountry || 'Live ADS-B';
-  document.getElementById('detail-source').textContent = f.source === 'adsbfi' ? 'adsb.fi Open Data' : 'OpenSky Network';
+  document.getElementById('detail-source').textContent = f.source === 'adsblol'
+    ? 'adsb.lol Live ADS-B'
+    : (f.source === 'adsbfi' ? 'adsb.fi Open Data' : 'OpenSky Network');
   document.getElementById('detail-contact-age').textContent = formatAge(f.lastContact);
 
   document.getElementById('detail-alt-ft').textContent = `${formatNumber(f.altitudeFt)} ft`;
@@ -294,6 +296,14 @@ function renderFlightDetail() {
   renderLiveAltitudeChart(f);
 }
 
+function formatSourceTitle(src) {
+  if (src === 'opensky') return 'LIVE · OpenSky Network (전 세계)';
+  if (src === 'adsb-global') return 'LIVE · adsb.fi + adsb.lol (글로벌 허브)';
+  if (src === 'adsblol') return 'LIVE · adsb.lol (화면 반경 250NM)';
+  if (src === 'adsbfi') return 'LIVE · adsb.fi (화면 반경 250NM)';
+  return 'LIVE · ADS-B';
+}
+
 function handleLivePayload(payload) {
   if (!payload || payload.skipped) return;
 
@@ -305,9 +315,7 @@ function handleLivePayload(payload) {
     recordTrackPoints(state.rawFlights);
 
     statusDotEl.className = 'status-dot';
-    sourceLabelEl.textContent = state.activeSource === 'adsbfi'
-      ? 'LIVE · adsb.fi (화면 반경 250NM)'
-      : 'LIVE · OpenSky Network (전 세계)';
+    sourceLabelEl.textContent = formatSourceTitle(state.activeSource);
 
     if (payload.notice) {
       liveNoticeEl.textContent = payload.notice;
@@ -339,6 +347,27 @@ function stopConnections() {
   }
 }
 
+async function fetchBackendOnce() {
+  const lat = Number(globe.targetLat.toFixed(3));
+  const lon = Number(((((globe.targetLon + 180) % 360) + 360) % 360 - 180).toFixed(3));
+  const qs = new URLSearchParams({
+    provider: state.provider,
+    lat: String(lat),
+    lon: String(lon)
+  });
+  try {
+    const res = await fetch(`./api/flights?${qs.toString()}`, { cache: 'no-store' });
+    if (!res.ok) {
+      handleLivePayload({ ok: false, error: `백엔드 응답 오류 (HTTP ${res.status})` });
+      return;
+    }
+    const payload = await res.json();
+    handleLivePayload(payload);
+  } catch (err) {
+    handleLivePayload({ ok: false, error: `서버 연결 오류 (${err?.message || 'network'})` });
+  }
+}
+
 async function fetchDirectOnce(force = false) {
   const lat = Number(globe.targetLat.toFixed(3));
   const lon = Number(((((globe.targetLon + 180) % 360) + 360) % 360 - 180).toFixed(3));
@@ -356,30 +385,10 @@ function connectLiveFeed(force = false) {
   statusDotEl.className = 'status-dot warn';
   sourceLabelEl.textContent = '실시간 ADS-B 수신 중...';
 
-  const lat = Number(globe.targetLat.toFixed(3));
-  const lon = Number(((((globe.targetLon + 180) % 360) + 360) % 360 - 180).toFixed(3));
-
   if (state.backendAvailable) {
-    const qs = new URLSearchParams({
-      provider: state.provider,
-      lat: String(lat),
-      lon: String(lon)
-    });
-    const es = new EventSource(`./api/stream?${qs.toString()}`);
-    state.eventSource = es;
-
-    es.addEventListener('flights', (evt) => {
-      try {
-        handleLivePayload(JSON.parse(evt.data));
-      } catch {
-        // Ignore malformed frame
-      }
-    });
-
-    es.onerror = () => {
-      statusDotEl.className = 'status-dot warn';
-      sourceLabelEl.textContent = '실시간 스트림 재연결 중...';
-    };
+    // Use reliable JSON polling against /api/flights (immune to Render/Cloudflare SSE proxy buffering)
+    fetchBackendOnce();
+    state.pollTimer = setInterval(fetchBackendOnce, 5000);
     return;
   }
 
