@@ -181,14 +181,36 @@ export class Globe3D {
 
   _bindEvents() {
     const el = this.canvas;
+    const activePointers = new Map();
+    let prevPinchDist = null;
+    let wasPinching = false;
+
+    const getPinchDistance = () => {
+      const pts = Array.from(activePointers.values());
+      if (pts.length < 2) return null;
+      return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    };
 
     el.addEventListener('pointerdown', (e) => {
-      this.isDragging = true;
-      this.dragMoved = false;
-      this.lastPointer = { x: e.clientX, y: e.clientY };
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
       this.velocityLon = 0;
       this.velocityLat = 0;
       el.setPointerCapture(e.pointerId);
+
+      if (activePointers.size === 1) {
+        this.isDragging = true;
+        this.dragMoved = false;
+        wasPinching = false;
+        prevPinchDist = null;
+        this.lastPointer = { x: e.clientX, y: e.clientY };
+      } else if (activePointers.size === 2) {
+        // Transition cleanly into pinch-to-zoom
+        this.isDragging = false;
+        this.dragMoved = true;
+        wasPinching = true;
+        this.followSelected = false;
+        prevPinchDist = getPinchDistance();
+      }
     });
 
     el.addEventListener('pointermove', (e) => {
@@ -196,14 +218,31 @@ export class Globe3D {
       const px = e.clientX - rect.left;
       const py = e.clientY - rect.top;
 
-      if (this.isDragging) {
+      if (activePointers.has(e.pointerId)) {
+        activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+      }
+
+      // Two-finger pinch-to-zoom
+      if (activePointers.size >= 2) {
+        const dist = getPinchDistance();
+        if (dist && prevPinchDist && prevPinchDist > 8) {
+          const ratio = dist / prevPinchDist;
+          this.targetZoom = Math.max(0.85, Math.min(6.5, this.targetZoom * ratio));
+        }
+        prevPinchDist = dist;
+        return;
+      }
+
+      // Single-finger / mouse orbit drag
+      if (this.isDragging && activePointers.size === 1) {
         const dx = e.clientX - this.lastPointer.x;
         const dy = e.clientY - this.lastPointer.y;
-        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+        const moveThresh = e.pointerType === 'touch' ? 5 : 2;
+        if (Math.abs(dx) > moveThresh || Math.abs(dy) > moveThresh) {
           this.dragMoved = true;
           this.followSelected = false;
         }
-        const sensitivity = 0.28 / Math.sqrt(this.zoom);
+        const sensitivity = (e.pointerType === 'touch' ? 0.34 : 0.28) / Math.sqrt(this.zoom);
         this.targetLon -= dx * sensitivity;
         this.targetLat = Math.max(-82, Math.min(82, this.targetLat + dy * sensitivity));
         this.velocityLon = -dx * sensitivity * 0.35;
@@ -212,7 +251,8 @@ export class Globe3D {
         return;
       }
 
-      // Hover hit-test
+      // Hover tooltip for mouse/pen only (avoid sticky tooltips on touch screens)
+      if (e.pointerType === 'touch') return;
       const hit = this._hitTest(px, py, 16);
       const nextHover = hit ? hit.flight.icao24 : null;
       if (nextHover !== this.hoveredIcao) {
@@ -222,30 +262,49 @@ export class Globe3D {
       this.onHoverFlight(hit ? hit.flight : null, { x: px, y: py });
     });
 
-    el.addEventListener('pointerup', (e) => {
-      if (!this.isDragging) return;
-      this.isDragging = false;
+    const handlePointerEnd = (e, allowTap) => {
+      activePointers.delete(e.pointerId);
       try {
         el.releasePointerCapture(e.pointerId);
       } catch {
         // Ignore
       }
 
-      if (!this.dragMoved) {
-        const rect = el.getBoundingClientRect();
-        const px = e.clientX - rect.left;
-        const py = e.clientY - rect.top;
-        const hit = this._hitTest(px, py, 18);
-        if (hit) {
-          this.selectedIcao = hit.flight.icao24;
-          this.onSelectFlight(hit.flight);
-        } else {
-          this.selectedIcao = null;
-          this.followSelected = false;
-          this.onSelectFlight(null);
+      if (activePointers.size === 1) {
+        // Resume smooth drag from remaining finger after pinch ends
+        const remaining = Array.from(activePointers.values())[0];
+        this.lastPointer = { x: remaining.x, y: remaining.y };
+        this.isDragging = true;
+        prevPinchDist = null;
+        return;
+      }
+
+      if (activePointers.size === 0) {
+        const shouldTap = allowTap && !this.dragMoved && !wasPinching;
+        this.isDragging = false;
+        prevPinchDist = null;
+        wasPinching = false;
+
+        if (shouldTap) {
+          const rect = el.getBoundingClientRect();
+          const px = e.clientX - rect.left;
+          const py = e.clientY - rect.top;
+          const tapRadius = e.pointerType === 'touch' ? 30 : 18;
+          const hit = this._hitTest(px, py, tapRadius);
+          if (hit) {
+            this.selectedIcao = hit.flight.icao24;
+            this.onSelectFlight(hit.flight);
+          } else {
+            this.selectedIcao = null;
+            this.followSelected = false;
+            this.onSelectFlight(null);
+          }
         }
       }
-    });
+    };
+
+    el.addEventListener('pointerup', (e) => handlePointerEnd(e, true));
+    el.addEventListener('pointercancel', (e) => handlePointerEnd(e, false));
 
     el.addEventListener('pointerleave', () => {
       this.hoveredIcao = null;
@@ -374,7 +433,7 @@ export class Globe3D {
 
     const cx = W * 0.5;
     const cy = H * 0.5;
-    const baseRadius = Math.min(W, H) * 0.39;
+    const baseRadius = W < H ? Math.min(W * 0.45, H * 0.36) : Math.min(W, H) * 0.39;
     const R = baseRadius * this.zoom;
     const mat = this._computeRotationMatrix();
 

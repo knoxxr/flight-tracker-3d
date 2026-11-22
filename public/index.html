@@ -2,7 +2,8 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#040b15" />
   <title>AeroGlobe 3D — 전 세계 실시간 ADS-B 항공기 추적기</title>
   <meta name="description" content="OpenSky Network와 adsb.fi의 100% 실시간 ADS-B 트랜스폰더 데이터를 3D 지구본 위에 시각화하는 글로벌 항공기 추적기" />
   <link rel="stylesheet" href="./styles.css" />
@@ -15,16 +16,20 @@
     </div>
 
     <!-- Top-Left Command & Search Bar -->
-    <header class="hud-top-left" aria-label="실시간 항공기 검색 및 수신 상태">
+    <header class="hud-top-left" id="hud-top" aria-label="실시간 항공기 검색 및 수신 상태">
       <div class="brand-row">
         <div class="brand-title-group">
           <h1 class="brand-title">AeroGlobe 3D</h1>
           <span class="utc-clock" id="utc-clock">--:--:-- UTC</span>
         </div>
-        <div class="mode-switch" role="group" aria-label="실시간 ADS-B 수신 피드 선택">
-          <button type="button" class="mode-btn active" id="provider-opensky" data-provider="opensky" title="OpenSky Network 전 세계 실시간 ADS-B">전 세계</button>
-          <button type="button" class="mode-btn" id="provider-adsbfi" data-provider="adsbfi" title="adsb.fi 현재 화면 중심 반경 250NM 실시간 ADS-B">화면 주변</button>
-          <button type="button" class="mode-btn" id="refresh-live-btn" title="실시간 ADS-B 즉시 새로고침" aria-label="즉시 새로고침">↻</button>
+        <div class="top-right-controls">
+          <div class="mode-switch" role="group" aria-label="실시간 ADS-B 수신 피드 선택">
+            <button type="button" class="mode-btn active" id="provider-opensky" data-provider="opensky" title="OpenSky Network 전 세계 실시간 ADS-B">전 세계</button>
+            <button type="button" class="mode-btn" id="provider-adsbfi" data-provider="adsbfi" title="adsb.fi 현재 화면 중심 반경 250NM 실시간 ADS-B">주변</button>
+            <button type="button" class="mode-btn" id="refresh-live-btn" title="실시간 ADS-B 즉시 새로고침" aria-label="즉시 새로고침">↻</button>
+          </div>
+          <button type="button" class="mobile-only-btn" id="mobile-search-btn" aria-label="검색 열기" title="검색">검색</button>
+          <button type="button" class="mobile-only-btn" id="mobile-list-btn" aria-label="항공편 목록" title="목록">목록</button>
         </div>
       </div>
 
@@ -38,7 +43,7 @@
         </span>
       </div>
 
-      <div class="search-box">
+      <div class="search-box" id="search-box">
         <input
           type="search"
           id="flight-search"
@@ -52,24 +57,31 @@
       <p class="fallback-notice hidden" id="live-notice"></p>
     </header>
 
+    <!-- Mobile Quick Floating Controls (Zoom & Layer Toggle) -->
+    <div class="mobile-fab-stack" aria-label="모바일 빠른 지도 제어">
+      <button type="button" class="fab-btn" id="mobile-layers-btn" aria-label="지도 레이어 설정" title="레이어">⚙</button>
+      <button type="button" class="fab-btn" id="mobile-zoom-in-btn" aria-label="확대">+</button>
+      <button type="button" class="fab-btn" id="mobile-zoom-out-btn" aria-label="축소">−</button>
+    </div>
+
     <!-- Bottom-Left Camera Presets & Layer Toggles -->
-    <nav class="hud-bottom-left" aria-label="지역 카메라 및 지도 레이어">
+    <nav class="hud-bottom-left" id="hud-bottom" aria-label="지역 카메라 및 지도 레이어">
+      <div class="layer-group" id="layer-group">
+        <button type="button" class="toggle-btn" id="toggle-rotate">자동 회전</button>
+        <button type="button" class="toggle-btn active" id="toggle-daynight">밤/낮 그림자</button>
+        <button type="button" class="toggle-btn active" id="toggle-trails">비행 궤적</button>
+        <button type="button" class="toggle-btn active" id="toggle-airports">공항 허브</button>
+        <button type="button" class="toggle-btn desktop-only-btn" id="zoom-in-btn" aria-label="확대">+</button>
+        <button type="button" class="toggle-btn desktop-only-btn" id="zoom-out-btn" aria-label="축소">−</button>
+      </div>
       <div class="preset-group" id="region-presets">
-        <button type="button" class="chip-btn active" data-lat="36" data-lon="128" data-zoom="1.55">한국 · 동아시아</button>
+        <button type="button" class="chip-btn active" data-lat="36" data-lon="128" data-zoom="1.55">한국·동아시아</button>
         <button type="button" class="chip-btn" data-lat="20" data-lon="20" data-zoom="1.05">전 세계</button>
         <button type="button" class="chip-btn" data-lat="49" data-lon="10" data-zoom="1.95">유럽</button>
         <button type="button" class="chip-btn" data-lat="38" data-lon="-96" data-zoom="1.65">북미</button>
         <button type="button" class="chip-btn" data-lat="25" data-lon="52" data-zoom="2.0">중동</button>
         <button type="button" class="chip-btn" data-lat="44" data-lon="-40" data-zoom="1.45">북대서양</button>
         <button type="button" class="chip-btn" data-lat="34" data-lon="-168" data-zoom="1.25">태평양</button>
-      </div>
-      <div class="layer-group">
-        <button type="button" class="toggle-btn" id="toggle-rotate">자동 회전</button>
-        <button type="button" class="toggle-btn active" id="toggle-daynight">밤/낮 그림자</button>
-        <button type="button" class="toggle-btn active" id="toggle-trails">비행 궤적</button>
-        <button type="button" class="toggle-btn active" id="toggle-airports">공항 허브</button>
-        <button type="button" class="toggle-btn" id="zoom-in-btn" aria-label="확대">+</button>
-        <button type="button" class="toggle-btn" id="zoom-out-btn" aria-label="축소">−</button>
       </div>
     </nav>
 
@@ -89,8 +101,10 @@
       </span>
     </aside>
 
-    <!-- Right Slide-in Panel: Flight List OR Live ADS-B Flight Inspector -->
+    <!-- Right Slide-in Panel (Desktop) / Bottom Sheet (Mobile) -->
     <aside class="hud-right hidden" id="side-panel" aria-label="실시간 항공기 상세 정보 및 목록">
+      <div class="sheet-handle-bar" id="sheet-handle" aria-hidden="true"><span></span></div>
+
       <!-- Flight List View -->
       <section id="flight-list-view" class="panel-section hidden">
         <div class="panel-header">
@@ -176,7 +190,7 @@
       </section>
     </aside>
 
-    <!-- Pointer Hover Tooltip -->
+    <!-- Pointer Hover Tooltip (Mouse only) -->
     <div class="hover-tooltip hidden" id="hover-tooltip" role="tooltip"></div>
   </main>
 

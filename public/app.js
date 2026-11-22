@@ -165,15 +165,20 @@ function applySearchFilter() {
 
 function setPanelMode(mode) {
   state.panelMode = mode;
+  const mobileListBtn = document.getElementById('mobile-list-btn');
   if (mode === 'none') {
+    document.body.classList.remove('sheet-open');
     sidePanelEl.classList.add('hidden');
     listViewEl.classList.add('hidden');
     detailViewEl.classList.add('hidden');
+    if (mobileListBtn) mobileListBtn.classList.remove('active');
     return;
   }
+  document.body.classList.add('sheet-open');
   sidePanelEl.classList.remove('hidden');
   listViewEl.classList.toggle('hidden', mode !== 'list');
   detailViewEl.classList.toggle('hidden', mode !== 'detail');
+  if (mobileListBtn) mobileListBtn.classList.toggle('active', mode === 'list');
   if (mode === 'list') renderFlightList();
   if (mode === 'detail') renderFlightDetail();
 }
@@ -450,6 +455,61 @@ function bindUI() {
     setPanelMode(state.panelMode === 'list' ? 'none' : 'list');
   });
 
+  const hudTopEl = document.getElementById('hud-top');
+  const hudBottomEl = document.getElementById('hud-bottom');
+  const mobileSearchBtn = document.getElementById('mobile-search-btn');
+  const mobileListBtn = document.getElementById('mobile-list-btn');
+  const mobileLayersBtn = document.getElementById('mobile-layers-btn');
+  const mobileZoomInBtn = document.getElementById('mobile-zoom-in-btn');
+  const mobileZoomOutBtn = document.getElementById('mobile-zoom-out-btn');
+  const sheetHandleEl = document.getElementById('sheet-handle');
+
+  if (mobileSearchBtn && hudTopEl) {
+    mobileSearchBtn.addEventListener('click', () => {
+      const open = hudTopEl.classList.toggle('search-open');
+      mobileSearchBtn.classList.toggle('active', open);
+      if (open) {
+        setTimeout(() => searchInputEl.focus(), 50);
+      }
+    });
+  }
+
+  if (mobileListBtn) {
+    mobileListBtn.addEventListener('click', () => {
+      setPanelMode(state.panelMode === 'list' ? 'none' : 'list');
+    });
+  }
+
+  if (mobileLayersBtn && hudBottomEl) {
+    mobileLayersBtn.addEventListener('click', () => {
+      const open = hudBottomEl.classList.toggle('layers-open');
+      mobileLayersBtn.classList.toggle('active', open);
+    });
+  }
+
+  if (mobileZoomInBtn) {
+    mobileZoomInBtn.addEventListener('click', () => {
+      globe.targetZoom = Math.min(6.5, globe.targetZoom * 1.32);
+    });
+  }
+
+  if (mobileZoomOutBtn) {
+    mobileZoomOutBtn.addEventListener('click', () => {
+      globe.targetZoom = Math.max(0.85, globe.targetZoom / 1.32);
+    });
+  }
+
+  if (sheetHandleEl) {
+    sheetHandleEl.addEventListener('click', () => {
+      if (state.panelMode === 'detail') {
+        state.selectedIcao = null;
+        state.followSelected = false;
+        globe.setSelectedFlight(null);
+      }
+      setPanelMode('none');
+    });
+  }
+
   document.getElementById('close-list-btn').addEventListener('click', () => setPanelMode('none'));
   document.getElementById('close-detail-btn').addEventListener('click', () => {
     state.selectedIcao = null;
@@ -508,7 +568,9 @@ function bindUI() {
     if (f) globe.flyTo(f.lat, f.lon, Math.max(globe.targetZoom, 2.3));
   });
 
-  window.addEventListener('resize', () => globe.resize());
+  const handleResize = () => globe.resize();
+  window.addEventListener('resize', handleResize);
+  window.addEventListener('orientationchange', () => setTimeout(handleResize, 120));
 }
 
 function updateClock() {

@@ -32,12 +32,14 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   background: var(--bg-deep);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .hidden {
@@ -48,6 +50,7 @@ body {
   position: relative;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -721,29 +724,240 @@ body {
   color: var(--text-secondary);
 }
 
+.top-right-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mobile-only-btn,
+.mobile-fab-stack,
+.sheet-handle-bar {
+  display: none;
+}
+
+.hud-bottom-left {
+  flex-direction: column-reverse;
+}
+
 @media (max-width: 780px) {
+  .desktop-only-btn,
+  .utc-clock,
+  .hud-bottom-right,
+  .hover-tooltip {
+    display: none !important;
+  }
+
+  /* Compact safe-area Top HUD */
   .hud-top-left {
-    width: calc(100vw - 24px);
-    left: 12px;
-    top: 12px;
+    top: calc(10px + env(safe-area-inset-top, 0px));
+    left: 10px;
+    right: 10px;
+    width: auto;
+    padding: 10px 12px;
+    gap: 7px;
+    border-radius: 12px;
   }
 
-  .hud-bottom-left {
-    left: 12px;
-    bottom: 12px;
-    max-width: calc(100vw - 24px);
+  .brand-title {
+    font-size: 14.5px;
   }
 
-  .hud-bottom-right {
+  .mode-btn {
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+
+  .mobile-only-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-subtle);
+    background: rgba(20, 38, 62, 0.72);
+    color: var(--text-primary);
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 5px 9px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .mobile-only-btn.active {
+    background: rgba(56, 189, 248, 0.2);
+    border-color: rgba(56, 189, 248, 0.5);
+    color: var(--accent-sky);
+  }
+
+  .status-strip {
+    font-size: 11.5px;
+  }
+
+  #source-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 62vw;
+  }
+
+  /* Search box collapses on mobile unless toggled open */
+  .search-box {
     display: none;
   }
 
+  .hud-top-left.search-open .search-box {
+    display: flex;
+  }
+
+  .search-box .list-toggle-btn {
+    display: none;
+  }
+
+  /* 16px prevents iOS Safari auto-zoom on input focus */
+  #flight-search {
+    font-size: 16px;
+    padding: 9px 11px;
+  }
+
+  /* Right-side floating thumb controls (Layers / Zoom + / -) */
+  .mobile-fab-stack {
+    position: absolute;
+    right: 10px;
+    bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .fab-btn {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-strong);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    color: var(--text-primary);
+    font-size: 17px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.38);
+    cursor: pointer;
+  }
+
+  .fab-btn.active {
+    border-color: rgba(56, 189, 248, 0.55);
+    color: var(--accent-sky);
+  }
+
+  /* Slim single-row swipeable region presets bar */
+  .hud-bottom-left {
+    left: 10px;
+    right: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    max-width: none;
+    padding: 8px 10px;
+    border-radius: 12px;
+    gap: 8px;
+  }
+
+  .preset-group {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 6px;
+    padding-bottom: 1px;
+  }
+
+  .preset-group::-webkit-scrollbar {
+    display: none;
+  }
+
+  .chip-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
+  /* Layer toggles appear cleanly above preset strip only when gear FAB is tapped */
+  .layer-group {
+    display: none;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .hud-bottom-left.layers-open .layer-group {
+    display: flex;
+  }
+
+  .toggle-btn {
+    flex: 1 1 auto;
+    text-align: center;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  /* Hide bottom bar & FABs while bottom-sheet drawer is open */
+  body.sheet-open .hud-bottom-left,
+  body.sheet-open .mobile-fab-stack {
+    display: none !important;
+  }
+
+  /* Sleek Bottom Sheet for Flight Detail & List */
   .hud-right {
     top: auto;
-    bottom: 12px;
-    right: 12px;
-    left: 12px;
-    width: auto;
-    max-height: 55vh;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-height: 66dvh;
+    border-radius: 18px 18px 0 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    box-shadow: 0 -10px 34px rgba(0, 0, 0, 0.52);
+  }
+
+  .sheet-handle-bar {
+    display: flex;
+    justify-content: center;
+    padding: 10px 0 2px;
+    cursor: pointer;
+  }
+
+  .sheet-handle-bar span {
+    width: 38px;
+    height: 4px;
+    border-radius: 99px;
+    background: var(--border-strong);
+  }
+
+  .panel-section {
+    padding: 10px 14px 16px;
+    gap: 12px;
+    max-height: calc(66dvh - 20px);
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .icon-close-btn {
+    width: 34px;
+    height: 34px;
+    font-size: 18px;
+  }
+
+  .flight-row {
+    padding: 11px 12px;
+  }
+
+  .primary-btn,
+  .secondary-btn {
+    padding: 11px 12px;
+    font-size: 13.5px;
   }
 }
