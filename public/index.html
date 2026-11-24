@@ -1,13 +1,13 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#040b15" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>AeroGlobe 3D — 전 세계 실시간 ADS-B 항공기 추적기</title>
-  <meta name="description" content="OpenSky Network와 adsb.fi의 100% 실시간 ADS-B 트랜스폰더 데이터를 3D 지구본 위에 시각화하는 글로벌 항공기 추적기" />
+  <title>AeroGlobe 3D — Global Live ADS-B Flight Tracker</title>
+  <meta name="description" content="Real-time global ADS-B aircraft tracker visualized on an interactive 3D globe with oceanic route estimation and live NOAA METAR weather." />
   <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png" />
   <link rel="manifest" href="./manifest.json" />
@@ -17,34 +17,35 @@
   <main class="app-shell" id="app-shell">
     <!-- Fullscreen 3D Globe Canvas -->
     <div class="globe-stage" id="globe-stage">
-      <canvas id="globe-canvas" aria-label="전 세계 실시간 ADS-B 항공기 3D 지도"></canvas>
+      <canvas id="globe-canvas" aria-label="Global Live ADS-B 3D Flight Map"></canvas>
     </div>
 
     <!-- Top-Left Command & Search Bar -->
-    <header class="hud-top-left" id="hud-top" aria-label="실시간 항공기 검색 및 수신 상태">
+    <header class="hud-top-left" id="hud-top" aria-label="Live aircraft search and status">
       <div class="brand-row">
         <div class="brand-title-group">
           <h1 class="brand-title">AeroGlobe 3D</h1>
           <span class="utc-clock" id="utc-clock">--:--:-- UTC</span>
         </div>
         <div class="top-right-controls">
-          <div class="mode-switch" role="group" aria-label="실시간 ADS-B 수신 피드 선택">
-            <button type="button" class="mode-btn active" id="provider-opensky" data-provider="opensky" title="OpenSky Network 전 세계 실시간 ADS-B">전세계</button>
-            <button type="button" class="mode-btn" id="provider-adsbfi" data-provider="adsbfi" title="adsb.fi 현재 화면 중심 반경 250NM 실시간 ADS-B">주변</button>
-            <button type="button" class="mode-btn" id="refresh-live-btn" title="실시간 ADS-B 즉시 새로고침" aria-label="즉시 새로고침">↻</button>
+          <button type="button" class="lang-toggle-btn" id="lang-toggle-btn" data-i18n="langButton" data-i18n-title="langToggleTitle" title="Switch language (EN / 한국어)">한국어</button>
+          <div class="mode-switch" role="group" aria-label="Live ADS-B feed selector">
+            <button type="button" class="mode-btn active" id="provider-opensky" data-provider="opensky" data-i18n="modeGlobal" data-i18n-title="modeGlobalTitle" title="Global live ADS-B coverage across 103 hubs">Global</button>
+            <button type="button" class="mode-btn" id="provider-adsbfi" data-provider="adsbfi" data-i18n="modeLocal" data-i18n-title="modeLocalTitle" title="Live ADS-B within 250 NM of current camera center">Nearby</button>
+            <button type="button" class="mode-btn" id="refresh-live-btn" data-i18n-title="refreshTitle" title="Refresh live ADS-B now" aria-label="Refresh">↻</button>
           </div>
-          <button type="button" class="mobile-only-btn" id="mobile-search-btn" aria-label="검색 열기" title="검색">검색</button>
-          <button type="button" class="mobile-only-btn" id="mobile-list-btn" aria-label="항공편 목록" title="목록">목록</button>
+          <button type="button" class="mobile-only-btn" id="mobile-search-btn" data-i18n="mobileSearch" aria-label="Search">Search</button>
+          <button type="button" class="mobile-only-btn" id="mobile-list-btn" data-i18n="mobileList" aria-label="Flight list">List</button>
         </div>
       </div>
 
       <div class="status-strip">
         <span class="source-indicator" id="source-indicator">
           <span class="status-dot" id="status-dot"></span>
-          <span id="source-label">실시간 ADS-B 연결 중...</span>
+          <span id="source-label" data-i18n="connectingLive">Connecting to live ADS-B...</span>
         </span>
         <span class="metric-inline">
-          실시간 <strong id="flight-count">0</strong>대
+          <span data-i18n="livePrefix">Live</span> <strong id="flight-count">0</strong><span data-i18n="liveUnit"></span>
         </span>
       </div>
 
@@ -52,11 +53,12 @@
         <input
           type="search"
           id="flight-search"
-          placeholder="편명, 등록번호, ICAO24, 국적, 기종 검색"
+          data-i18n-placeholder="searchPlaceholder"
+          placeholder="Search callsign, reg, ICAO24, country, type"
           autocomplete="off"
-          aria-label="실시간 항공기 검색"
+          aria-label="Search live aircraft"
         />
-        <button type="button" class="list-toggle-btn" id="toggle-list-btn" title="실시간 항공편 목록 열기">목록</button>
+        <button type="button" class="list-toggle-btn" id="toggle-list-btn" data-i18n="listToggleBtn" data-i18n-title="listToggleTitle" title="Open live flight list">List</button>
       </div>
 
       <p class="fallback-notice hidden" id="live-notice"></p>
@@ -64,66 +66,66 @@
     </header>
 
     <!-- Mobile Quick Floating Controls (Zoom & Layer Toggle) -->
-    <div class="mobile-fab-stack" aria-label="모바일 빠른 지도 제어">
-      <button type="button" class="fab-btn" id="mobile-layers-btn" aria-label="지도 레이어 설정" title="레이어">⚙</button>
-      <button type="button" class="fab-btn" id="mobile-zoom-in-btn" aria-label="확대">+</button>
-      <button type="button" class="fab-btn" id="mobile-zoom-out-btn" aria-label="축소">−</button>
+    <div class="mobile-fab-stack" aria-label="Quick map controls">
+      <button type="button" class="fab-btn" id="mobile-layers-btn" aria-label="Layers" title="Layers">⚙</button>
+      <button type="button" class="fab-btn" id="mobile-zoom-in-btn" aria-label="Zoom in">+</button>
+      <button type="button" class="fab-btn" id="mobile-zoom-out-btn" aria-label="Zoom out">−</button>
     </div>
 
     <!-- Bottom-Left Camera Presets & Layer Toggles -->
-    <nav class="hud-bottom-left" id="hud-bottom" aria-label="지역 카메라 및 지도 레이어">
+    <nav class="hud-bottom-left" id="hud-bottom" aria-label="Camera presets and map layers">
       <div class="layer-group" id="layer-group">
-        <button type="button" class="toggle-btn" id="toggle-rotate">자동 회전</button>
-        <button type="button" class="toggle-btn active" id="toggle-daynight">밤/낮 그림자</button>
-        <button type="button" class="toggle-btn active" id="toggle-trails">비행 궤적</button>
-        <button type="button" class="toggle-btn active" id="toggle-places">주요 지명</button>
-        <button type="button" class="toggle-btn active" id="toggle-airports">공항 허브</button>
-        <button type="button" class="toggle-btn active est-toggle" id="toggle-estimated" title="해안 마지막 실시간 수신 항공기를 실제 노선(adsbdb) 따라 공해상 추정 표시">공해상 추정</button>
-        <button type="button" class="toggle-btn desktop-only-btn" id="zoom-in-btn" aria-label="확대">+</button>
-        <button type="button" class="toggle-btn desktop-only-btn" id="zoom-out-btn" aria-label="축소">−</button>
+        <button type="button" class="toggle-btn" id="toggle-rotate" data-i18n="toggleRotate">Auto Rotate</button>
+        <button type="button" class="toggle-btn active" id="toggle-daynight" data-i18n="toggleDayNight">Day/Night</button>
+        <button type="button" class="toggle-btn active" id="toggle-trails" data-i18n="toggleTrails">Trails</button>
+        <button type="button" class="toggle-btn active" id="toggle-places" data-i18n="togglePlaces">Places</button>
+        <button type="button" class="toggle-btn active" id="toggle-airports" data-i18n="toggleAirports">Airports</button>
+        <button type="button" class="toggle-btn active est-toggle" id="toggle-estimated" data-i18n="toggleEstimated" data-i18n-title="toggleEstimatedTitle" title="Project real coastal ADS-B flights across oceanic blind spots along actual routes">Oceanic Est.</button>
+        <button type="button" class="toggle-btn desktop-only-btn" id="zoom-in-btn" aria-label="Zoom in">+</button>
+        <button type="button" class="toggle-btn desktop-only-btn" id="zoom-out-btn" aria-label="Zoom out">−</button>
       </div>
       <div class="preset-group" id="region-presets">
-        <button type="button" class="chip-btn active" data-lat="36" data-lon="128" data-zoom="1.55">한국·동아시아</button>
-        <button type="button" class="chip-btn" data-lat="20" data-lon="20" data-zoom="1.05">전 세계</button>
-        <button type="button" class="chip-btn" data-lat="49" data-lon="10" data-zoom="1.95">유럽</button>
-        <button type="button" class="chip-btn" data-lat="38" data-lon="-96" data-zoom="1.65">북미</button>
-        <button type="button" class="chip-btn" data-lat="25" data-lon="52" data-zoom="2.0">중동</button>
-        <button type="button" class="chip-btn" data-lat="44" data-lon="-40" data-zoom="1.45">북대서양</button>
-        <button type="button" class="chip-btn" data-lat="34" data-lon="-168" data-zoom="1.25">태평양</button>
+        <button type="button" class="chip-btn active" data-lat="36" data-lon="128" data-zoom="1.55" data-i18n="presetKorea">East Asia</button>
+        <button type="button" class="chip-btn" data-lat="20" data-lon="20" data-zoom="1.05" data-i18n="presetWorld">World</button>
+        <button type="button" class="chip-btn" data-lat="49" data-lon="10" data-zoom="1.95" data-i18n="presetEurope">Europe</button>
+        <button type="button" class="chip-btn" data-lat="38" data-lon="-96" data-zoom="1.65" data-i18n="presetNorthAmerica">N. America</button>
+        <button type="button" class="chip-btn" data-lat="25" data-lon="52" data-zoom="2.0" data-i18n="presetMiddleEast">Middle East</button>
+        <button type="button" class="chip-btn" data-lat="44" data-lon="-40" data-zoom="1.45" data-i18n="presetAtlantic">N. Atlantic</button>
+        <button type="button" class="chip-btn" data-lat="34" data-lon="-168" data-zoom="1.25" data-i18n="presetPacific">Pacific</button>
       </div>
     </nav>
 
     <!-- Bottom-Right Altitude Color Legend, Icon Guide & Attribution -->
-    <aside class="hud-bottom-right" aria-label="고도별 색상 및 기종 아이콘 범례">
+    <aside class="hud-bottom-right" aria-label="Altitude legend and aircraft filters">
       <div class="legend-row">
-        <span class="legend-title">고도 (FT)</span>
+        <span class="legend-title" data-i18n="legendAltTitle">ALT (FT)</span>
         <div class="legend-items">
           <span class="legend-item"><i class="swatch" style="background:#4ade80"></i>&lt;15k</span>
           <span class="legend-item"><i class="swatch" style="background:#2dd4bf"></i>15-28k</span>
           <span class="legend-item"><i class="swatch" style="background:#38bdf8"></i>28-37k</span>
           <span class="legend-item"><i class="swatch" style="background:#fbbf24"></i>37k+</span>
-          <button type="button" class="legend-item legend-filter-btn" id="legend-estimated" data-filter="estimated" title="공해상 추정 항공기만 필터링"><i class="swatch" style="background:#c084fc"></i>추정</button>
+          <button type="button" class="legend-item legend-filter-btn" id="legend-estimated" data-filter="estimated" data-i18n-title="legendEstimatedTitle" title="Filter oceanic estimated flights only"><i class="swatch" style="background:#c084fc"></i><span data-i18n="legendEstimated">Est.</span></button>
         </div>
       </div>
       <div class="legend-row legend-icons-row">
-        <span class="legend-title">기종 필터</span>
+        <span class="legend-title" data-i18n="legendTypeTitle">Filter</span>
         <div class="legend-items" id="category-filter-bar">
-          <button type="button" class="legend-item legend-filter-btn" data-filter="heavy" title="초대형 4발 · 광동체 여객기만 보기">
-            <svg class="legend-svg" viewBox="-12 -12 24 24"><path d="M11 0 L3 2 L-2 11 L-5 10 L-2 2 L-8 2 L-10 5 L-11 4 L-9 0 L-11 -4 L-10 -5 L-8 -2 L-2 -2 L-5 -10 L-2 -11 L3 -2 Z" fill="#38bdf8"/><rect x="0" y="3.5" width="3" height="1.5" fill="#38bdf8"/><rect x="-2" y="6.8" width="2.6" height="1.4" fill="#38bdf8"/><rect x="0" y="-5" width="3" height="1.5" fill="#38bdf8"/><rect x="-2" y="-8.2" width="2.6" height="1.4" fill="#38bdf8"/></svg>대형
+          <button type="button" class="legend-item legend-filter-btn" data-filter="heavy" data-i18n-title="filterHeavyTitle" title="Filter super-heavy 4-engine & widebody jets">
+            <svg class="legend-svg" viewBox="-12 -12 24 24"><path d="M11 0 L3 2 L-2 11 L-5 10 L-2 2 L-8 2 L-10 5 L-11 4 L-9 0 L-11 -4 L-10 -5 L-8 -2 L-2 -2 L-5 -10 L-2 -11 L3 -2 Z" fill="#38bdf8"/><rect x="0" y="3.5" width="3" height="1.5" fill="#38bdf8"/><rect x="-2" y="6.8" width="2.6" height="1.4" fill="#38bdf8"/><rect x="0" y="-5" width="3" height="1.5" fill="#38bdf8"/><rect x="-2" y="-8.2" width="2.6" height="1.4" fill="#38bdf8"/></svg><span data-i18n="filterHeavy">Heavy</span>
           </button>
-          <button type="button" class="legend-item legend-filter-btn" data-filter="cargo" title="화물기만 보기">
-            <svg class="legend-svg" viewBox="-12 -12 24 24"><path d="M11 0 L3 2 L-2 10 L-4 9 L-2 2 L-8 1.5 L-10 4.5 L-11 4 L-9 0 L-11 -4 L-10 -4.5 L-8 -1.5 L-2 -2 L-4 -9 L-2 -10 L3 -2 Z" fill="#38bdf8"/><rect x="-4.5" y="-1.2" width="9" height="2.4" fill="#fb923c"/></svg>화물
+          <button type="button" class="legend-item legend-filter-btn" data-filter="cargo" data-i18n-title="filterCargoTitle" title="Filter cargo freighters only">
+            <svg class="legend-svg" viewBox="-12 -12 24 24"><path d="M11 0 L3 2 L-2 10 L-4 9 L-2 2 L-8 1.5 L-10 4.5 L-11 4 L-9 0 L-11 -4 L-10 -4.5 L-8 -1.5 L-2 -2 L-4 -9 L-2 -10 L3 -2 Z" fill="#38bdf8"/><rect x="-4.5" y="-1.2" width="9" height="2.4" fill="#fb923c"/></svg><span data-i18n="filterCargo">Cargo</span>
           </button>
-          <button type="button" class="legend-item legend-filter-btn" data-filter="prop" title="경비행기 · 프로펠러만 보기">
-            <svg class="legend-svg" viewBox="-12 -12 24 24"><path d="M9 0 L3 1.5 L2 10 L-1 10 L-1 1.5 L-8 1 L-9 4 L-10 3.5 L-9 0 L-10 -3.5 L-9 -4 L-8 -1 L-1 -1.5 L-1 -10 L2 -10 L3 -1.5 Z" fill="#4ade80"/></svg>경비행
+          <button type="button" class="legend-item legend-filter-btn" data-filter="prop" data-i18n-title="filterPropTitle" title="Filter propeller & light aircraft only">
+            <svg class="legend-svg" viewBox="-12 -12 24 24"><path d="M9 0 L3 1.5 L2 10 L-1 10 L-1 1.5 L-8 1 L-9 4 L-10 3.5 L-9 0 L-10 -3.5 L-9 -4 L-8 -1 L-1 -1.5 L-1 -10 L2 -10 L3 -1.5 Z" fill="#4ade80"/></svg><span data-i18n="filterProp">Prop</span>
           </button>
-          <button type="button" class="legend-item legend-filter-btn" data-filter="heli" title="헬리콥터만 보기">
-            <svg class="legend-svg" viewBox="-12 -12 24 24"><path d="M7 0 Q4 3 -1 2 L-9 1 L-11 3 L-10 0 L-11 -3 L-9 -1 L-1 -2 Q4 -3 7 0 Z" fill="#2dd4bf"/><path d="M-5 -6 L9 6 M9 -6 L-5 6" stroke="#2dd4bf" stroke-width="1.6" stroke-linecap="round"/></svg>헬기
+          <button type="button" class="legend-item legend-filter-btn" data-filter="heli" data-i18n-title="filterHeliTitle" title="Filter helicopters only">
+            <svg class="legend-svg" viewBox="-12 -12 24 24"><path d="M7 0 Q4 3 -1 2 L-9 1 L-11 3 L-10 0 L-11 -3 L-9 -1 L-1 -2 Q4 -3 7 0 Z" fill="#2dd4bf"/><path d="M-5 -6 L9 6 M9 -6 L-5 6" stroke="#2dd4bf" stroke-width="1.6" stroke-linecap="round"/></svg><span data-i18n="filterHeli">Heli</span>
           </button>
-          <button type="button" class="legend-item legend-filter-btn" data-filter="military" title="군용기 · 전투기만 보기">
-            <svg class="legend-svg" viewBox="-12 -12 24 24"><path d="M12 0 L3 2 L-4 9.5 L-6 8.5 L-5 2 L-10 4.5 L-11 3.5 L-10 0 L-11 -3.5 L-10 -4.5 L-5 -2 L-6 -8.5 L-4 -9.5 L3 -2 Z" fill="#38bdf8" stroke="#f87171" stroke-width="1.3"/></svg>군용
+          <button type="button" class="legend-item legend-filter-btn" data-filter="military" data-i18n-title="filterMilitaryTitle" title="Filter military aircraft only">
+            <svg class="legend-svg" viewBox="-12 -12 24 24"><path d="M12 0 L3 2 L-4 9.5 L-6 8.5 L-5 2 L-10 4.5 L-11 3.5 L-10 0 L-11 -3.5 L-10 -4.5 L-5 -2 L-6 -8.5 L-4 -9.5 L3 -2 Z" fill="#38bdf8" stroke="#f87171" stroke-width="1.3"/></svg><span data-i18n="filterMilitary">Mil</span>
           </button>
-          <button type="button" class="legend-clear-btn hidden" id="clear-filter-btn" title="필터 초기화">전체 ✕</button>
+          <button type="button" class="legend-clear-btn hidden" id="clear-filter-btn" data-i18n="filterClear" data-i18n-title="filterClearTitle" title="Clear category filter">All ✕</button>
         </div>
         <span class="legend-credit">
           <a href="https://opensky-network.org" target="_blank" rel="noopener noreferrer">OpenSky</a> ·
@@ -134,17 +136,17 @@
     </aside>
 
     <!-- Right Slide-in Panel (Desktop) / Bottom Sheet (Mobile) -->
-    <aside class="hud-right hidden" id="side-panel" aria-label="실시간 항공기 상세 정보 및 목록">
+    <aside class="hud-right hidden" id="side-panel" aria-label="Flight details and list">
       <div class="sheet-handle-bar" id="sheet-handle" aria-hidden="true"><span></span></div>
 
       <!-- Flight List View -->
       <section id="flight-list-view" class="panel-section hidden">
         <div class="panel-header">
           <div>
-            <h2 class="panel-title">실시간 비행 중 항공기</h2>
-            <p class="panel-subtitle" id="list-subtitle">실시간 수신 대기 중</p>
+            <h2 class="panel-title" data-i18n="listTitle">Live Airborne Flights</h2>
+            <p class="panel-subtitle" id="list-subtitle" data-i18n="listWaiting">Waiting for live telemetry...</p>
           </div>
-          <button type="button" class="icon-close-btn" id="close-list-btn" aria-label="닫기">×</button>
+          <button type="button" class="icon-close-btn" id="close-list-btn" aria-label="Close">×</button>
         </div>
         <div class="flight-list" id="flight-list-container"></div>
       </section>
@@ -156,39 +158,39 @@
             <div class="detail-callsign-row">
               <h2 class="detail-callsign" id="detail-callsign">---</h2>
               <span class="detail-type-tag" id="detail-aircraft-type">ADS-B</span>
-              <span class="phase-tag" id="detail-phase">순항</span>
+              <span class="phase-tag" id="detail-phase">Cruise</span>
             </div>
             <div class="detail-airline-row">
-              <span class="country-pill" id="detail-country-pill">🌐 미상</span>
+              <span class="country-pill" id="detail-country-pill">🌐 Unknown</span>
               <p class="panel-subtitle" id="detail-airline">---</p>
             </div>
           </div>
-          <button type="button" class="icon-close-btn" id="close-detail-btn" aria-label="닫기">×</button>
+          <button type="button" class="icon-close-btn" id="close-detail-btn" aria-label="Close">×</button>
         </div>
 
-        <!-- Real Origin -> Destination Route Card (always visible: loading / resolved / unavailable) -->
+        <!-- Real Origin -> Destination Route Card -->
         <div class="route-banner" id="detail-route-card">
           <div class="route-endpoint">
-            <span class="route-endpoint-label">출발지</span>
+            <span class="route-endpoint-label" data-i18n="originLabel">ORIGIN</span>
             <span class="route-iata" id="detail-origin-iata">---</span>
-            <span class="route-name" id="detail-origin-city">조회 중...</span>
+            <span class="route-name" id="detail-origin-city">Lookup...</span>
           </div>
           <div class="route-line-wrap">
             <div class="route-progress-track">
               <div class="route-progress-fill" id="detail-route-progress" style="width:0%"></div>
             </div>
-            <span class="route-meta" id="detail-route-eta">노선 조회 중...</span>
+            <span class="route-meta" id="detail-route-eta">Looking up route...</span>
           </div>
           <div class="route-endpoint right">
-            <span class="route-endpoint-label">목적지</span>
+            <span class="route-endpoint-label" data-i18n="destLabel">DESTINATION</span>
             <span class="route-iata" id="detail-dest-iata">---</span>
-            <span class="route-name" id="detail-dest-city">조회 중...</span>
+            <span class="route-name" id="detail-dest-city">Lookup...</span>
           </div>
         </div>
 
-        <!-- Real Aircraft Photo (shown when available from adsbdb / Planespotters.net) -->
+        <!-- Real Aircraft Photo -->
         <figure class="aircraft-photo-card hidden" id="detail-photo-card">
-          <img id="detail-photo-img" alt="선택한 항공기 실제 사진" loading="lazy" />
+          <img id="detail-photo-img" alt="Selected aircraft photo" loading="lazy" />
           <figcaption class="photo-caption">
             <span id="detail-photo-model">---</span>
             <span id="detail-photo-credit" class="photo-credit">---</span>
@@ -203,29 +205,29 @@
           </div>
           <div class="right-align">
             <span class="tele-label">LAST SIGNAL</span>
-            <strong class="tele-value mono-sm" id="detail-contact-age">방금 수신</strong>
+            <strong class="tele-value mono-sm" id="detail-contact-age">Just now</strong>
           </div>
         </div>
 
         <!-- Core Telemetry Grid -->
         <div class="telemetry-grid">
           <div class="telemetry-cell">
-            <span class="tele-label">고도 (ALTITUDE)</span>
+            <span class="tele-label" data-i18n="altLabel">ALTITUDE</span>
             <strong class="tele-value" id="detail-alt-ft">---</strong>
             <span class="tele-sub" id="detail-alt-m">---</span>
           </div>
           <div class="telemetry-cell">
-            <span class="tele-label">대지속도 (SPEED)</span>
+            <span class="tele-label" data-i18n="speedLabel">GROUND SPEED</span>
             <strong class="tele-value" id="detail-speed-kts">---</strong>
             <span class="tele-sub" id="detail-speed-kmh">---</span>
           </div>
           <div class="telemetry-cell">
-            <span class="tele-label">진방위 (TRUE TRACK)</span>
+            <span class="tele-label" data-i18n="headingLabel">TRUE TRACK</span>
             <strong class="tele-value" id="detail-heading">---</strong>
             <span class="tele-sub" id="detail-vrate">---</span>
           </div>
           <div class="telemetry-cell">
-            <span class="tele-label">좌표 (LAT / LON)</span>
+            <span class="tele-label" data-i18n="coordsLabel">COORDS (LAT / LON)</span>
             <strong class="tele-value mono-sm" id="detail-coords">---</strong>
             <span class="tele-sub" id="detail-squawk">SQK ----</span>
           </div>
@@ -234,24 +236,24 @@
         <!-- Extended Aircraft Specs, Avionics & Upper-Air Weather -->
         <div class="extra-specs-card" id="detail-extra-card">
           <div class="extra-specs-header">
-            <span>기체 상세 · 항전 · 상공 기상</span>
+            <span data-i18n="specsHeader">Aircraft · Avionics · Upper Air</span>
             <span id="detail-enrich-status" class="muted">---</span>
           </div>
           <dl class="specs-list" id="detail-specs-list">
-            <div class="spec-item"><dt>제조사 · 기종</dt><dd id="spec-model">---</dd></div>
-            <div class="spec-item"><dt>운항 · 소유사</dt><dd id="spec-owner">---</dd></div>
-            <div class="spec-item"><dt>기체 등급 · 기령</dt><dd id="spec-category">---</dd></div>
-            <div class="spec-item"><dt>마하 · 대기속도</dt><dd id="spec-airspeed">---</dd></div>
-            <div class="spec-item"><dt>목표고도 · QNH</dt><dd id="spec-nav">---</dd></div>
-            <div class="spec-item"><dt>상공 바람 · 외기온</dt><dd id="spec-weather">---</dd></div>
-            <div class="spec-item"><dt>수신방식 · 신호</dt><dd id="spec-signal">---</dd></div>
+            <div class="spec-item"><dt data-i18n="specModel">Manufacturer · Type</dt><dd id="spec-model">---</dd></div>
+            <div class="spec-item"><dt data-i18n="specOwner">Operator · Owner</dt><dd id="spec-owner">---</dd></div>
+            <div class="spec-item"><dt data-i18n="specCategory">Category · Built</dt><dd id="spec-category">---</dd></div>
+            <div class="spec-item"><dt data-i18n="specAirspeed">Mach · Airspeed</dt><dd id="spec-airspeed">---</dd></div>
+            <div class="spec-item"><dt data-i18n="specNav">Target Alt · QNH</dt><dd id="spec-nav">---</dd></div>
+            <div class="spec-item"><dt data-i18n="specWeather">Wind · OAT</dt><dd id="spec-weather">---</dd></div>
+            <div class="spec-item"><dt data-i18n="specSignal">Feed · Signal</dt><dd id="spec-signal">---</dd></div>
           </dl>
         </div>
 
         <!-- Live Altitude History Mini Chart -->
         <div class="profile-box" id="detail-profile-box">
           <div class="profile-header">
-            <span>실시간 수신 고도 추이</span>
+            <span data-i18n="profileHeader">Live Altitude History</span>
             <span id="detail-aircraft-label" class="muted">Live Transponder</span>
           </div>
           <svg id="altitude-profile-svg" viewBox="0 0 280 64" class="profile-svg" aria-hidden="true"></svg>
@@ -260,15 +262,15 @@
         <!-- Metadata Footer -->
         <div class="meta-row">
           <span>ICAO24 <strong id="detail-icao">------</strong></span>
-          <span>등록번호 <strong id="detail-reg">---</strong></span>
-          <span>국적 <strong id="detail-country">---</strong></span>
+          <span><span data-i18n="metaReg">REG</span> <strong id="detail-reg">---</strong></span>
+          <span><span data-i18n="metaCountry">COUNTRY</span> <strong id="detail-country">---</strong></span>
         </div>
 
         <!-- Actions -->
         <div class="detail-actions">
-          <button type="button" class="primary-btn" id="follow-flight-btn">카메라 추적</button>
-          <button type="button" class="secondary-btn" id="center-flight-btn">위치 이동</button>
-          <button type="button" class="secondary-btn" id="share-flight-btn" title="이 항공기 추적 링크 복사">공유</button>
+          <button type="button" class="primary-btn" id="follow-flight-btn" data-i18n="followBtn">Follow</button>
+          <button type="button" class="secondary-btn" id="center-flight-btn" data-i18n="centerBtn">Center</button>
+          <button type="button" class="secondary-btn" id="share-flight-btn" data-i18n="shareBtn" data-i18n-title="shareTitle" title="Copy shareable tracking link">Share</button>
         </div>
       </section>
 
@@ -281,28 +283,28 @@
               <span class="detail-type-tag" id="airport-icao">RKSI</span>
               <span class="phase-tag" id="airport-fltcat">METAR</span>
             </div>
-            <p class="panel-subtitle" id="airport-name">인천국제공항 · Seoul</p>
+            <p class="panel-subtitle" id="airport-name">Incheon Intl · Seoul</p>
           </div>
-          <button type="button" class="icon-close-btn" id="close-airport-btn" aria-label="닫기">×</button>
+          <button type="button" class="icon-close-btn" id="close-airport-btn" aria-label="Close">×</button>
         </div>
 
         <div class="metar-card" id="airport-metar-card">
           <div class="extra-specs-header">
-            <span>실시간 공항 기상 (NOAA METAR)</span>
-            <span id="metar-obs-time" class="muted">조회 중...</span>
+            <span data-i18n="metarHeader">Live Airport Weather (NOAA METAR)</span>
+            <span id="metar-obs-time" class="muted">Loading...</span>
           </div>
           <div class="metar-grid">
-            <div class="metar-cell"><span class="tele-label">기온 / 이슬점</span><strong id="metar-temp">--</strong></div>
-            <div class="metar-cell"><span class="tele-label">풍향 / 풍속</span><strong id="metar-wind">--</strong></div>
-            <div class="metar-cell"><span class="tele-label">시정</span><strong id="metar-vis">--</strong></div>
-            <div class="metar-cell"><span class="tele-label">기압 (QNH)</span><strong id="metar-qnh">--</strong></div>
+            <div class="metar-cell"><span class="tele-label" data-i18n="metarTempLabel">TEMP / DEWPOINT</span><strong id="metar-temp">--</strong></div>
+            <div class="metar-cell"><span class="tele-label" data-i18n="metarWindLabel">WIND</span><strong id="metar-wind">--</strong></div>
+            <div class="metar-cell"><span class="tele-label" data-i18n="metarVisLabel">VISIBILITY</span><strong id="metar-vis">--</strong></div>
+            <div class="metar-cell"><span class="tele-label" data-i18n="metarQnhLabel">PRESSURE (QNH)</span><strong id="metar-qnh">--</strong></div>
           </div>
-          <p class="metar-raw mono-sm" id="metar-raw">기상 데이터를 불러오는 중...</p>
+          <p class="metar-raw mono-sm" id="metar-raw">Loading weather data...</p>
         </div>
 
         <div class="airport-flights-header">
-          <span>실시간 연계 · 반경 180km 항공기</span>
-          <strong id="airport-flights-count">0대</strong>
+          <span data-i18n="airportFlightsHeader">Linked & Nearby Flights (180 km)</span>
+          <strong id="airport-flights-count">0</strong>
         </div>
         <div class="flight-list" id="airport-flights-list"></div>
       </section>

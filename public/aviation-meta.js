@@ -433,7 +433,7 @@ const UAV_TYPES = new Set(['RQ4', 'MQ9', 'MQ1', 'Q4', 'HRON', 'TB2', 'GLID']);
  * Returns { kind, labelKo, scale, role }.
  */
 export function classifyAircraftIcon(flight) {
-  if (!flight) return { kind: 'narrowbody', labelKo: '중형 여객기', scale: 1.0, role: 'commercial' };
+  if (!flight) return { kind: 'narrowbody', labelKo: '중형 여객기', labelEn: 'Narrowbody Jet', scale: 1.0, role: 'commercial' };
 
   const t = String(flight.aircraftType || '').trim().toUpperCase();
   const cat = String(flight.category || '').trim().toUpperCase();
@@ -443,30 +443,30 @@ export function classifyAircraftIcon(flight) {
 
   // 1. Balloon / Airship or UAV
   if (cat === 'B2' || t === 'BALL' || t === 'SHIP') {
-    return { kind: 'balloon', labelKo: '기구 · 비행선', scale: 0.9, role: 'special' };
+    return { kind: 'balloon', labelKo: '기구 · 비행선', labelEn: 'Balloon / Airship', scale: 0.9, role: 'special' };
   }
   if (cat === 'B6' || UAV_TYPES.has(t)) {
-    return { kind: 'uav', labelKo: '무인기 (UAV)', scale: 0.88, role: 'uav' };
+    return { kind: 'uav', labelKo: '무인기 (UAV)', labelEn: 'UAV / Drone', scale: 0.88, role: 'uav' };
   }
 
   // 2. Helicopter / Rotorcraft
   if (cat === 'A7' || HELICOPTER_PREFIXES.some((p) => t === p || t.startsWith(p))) {
-    return { kind: 'helicopter', labelKo: '헬리콥터', scale: 0.92, role: 'rotorcraft' };
+    return { kind: 'helicopter', labelKo: '헬리콥터', labelEn: 'Helicopter', scale: 0.92, role: 'rotorcraft' };
   }
 
   // 3. Military (dbFlags military bit, A6 high-perf fighter, military ICAO types, or military callsigns)
   const isMilCallsign = MILITARY_CALLSIGN_PREFIXES.some((p) => cs.startsWith(p) && /\d/.test(cs.slice(p.length)));
   if (MILITARY_FIGHTER_TYPES.has(t) || cat === 'A6') {
-    return { kind: 'military_fighter', labelKo: '군용기 · 전투기', scale: 0.98, role: 'military' };
+    return { kind: 'military_fighter', labelKo: '군용기 · 전투기', labelEn: 'Military Fighter', scale: 0.98, role: 'military' };
   }
   if (MILITARY_TRANSPORT_TYPES.has(t)) {
-    return { kind: 'military_heavy', labelKo: '군용 수송·정찰기', scale: 1.22, role: 'military' };
+    return { kind: 'military_heavy', labelKo: '군용 수송·정찰기', labelEn: 'Military Transport', scale: 1.22, role: 'military' };
   }
   if (flight.isMilitary || isMilCallsign) {
     const isHeavyMil = cat === 'A5' || SUPER_HEAVY_TYPES.has(t) || HEAVY_WIDEBODY_TYPES.has(t);
     return isHeavyMil
-      ? { kind: 'military_heavy', labelKo: '군용 대형기', scale: 1.22, role: 'military' }
-      : { kind: 'military_fighter', labelKo: '군용기', scale: 0.98, role: 'military' };
+      ? { kind: 'military_heavy', labelKo: '군용 대형기', labelEn: 'Military Heavy', scale: 1.22, role: 'military' }
+      : { kind: 'military_fighter', labelKo: '군용기', labelEn: 'Military', scale: 0.98, role: 'military' };
   }
 
   // 4. Cargo / Freighter (dedicated cargo operators or freighter type/description)
@@ -477,6 +477,7 @@ export function classifyAircraftIcon(flight) {
     return {
       kind: 'cargo',
       labelKo: isQuad ? '초대형 화물기' : '대형 화물기',
+      labelEn: isQuad ? 'Super Freighter' : 'Cargo Freighter',
       scale: isQuad ? 1.32 : 1.18,
       role: 'cargo'
     };
@@ -484,12 +485,12 @@ export function classifyAircraftIcon(flight) {
 
   // 5. Super-Heavy 4-Engine Widebody (A380, B747, A340)
   if (SUPER_HEAVY_TYPES.has(t)) {
-    return { kind: 'super_heavy', labelKo: '초대형 여객기 (4발)', scale: 1.38, role: 'commercial' };
+    return { kind: 'super_heavy', labelKo: '초대형 여객기 (4발)', labelEn: 'Super Heavy (4-Eng)', scale: 1.38, role: 'commercial' };
   }
 
   // 6. Heavy Widebody Twin-Jet (B777, B787, A350, A330, B767, or A5/A4 category)
   if (HEAVY_WIDEBODY_TYPES.has(t) || cat === 'A5' || cat === 'A4') {
-    return { kind: 'heavy', labelKo: '대형 광동체기', scale: 1.18, role: 'commercial' };
+    return { kind: 'heavy', labelKo: '대형 광동체기', labelEn: 'Widebody Heavy', scale: 1.18, role: 'commercial' };
   }
 
   // 7. General Aviation / Propeller / Turboprop / Glider
@@ -498,6 +499,7 @@ export function classifyAircraftIcon(flight) {
     return {
       kind: 'prop',
       labelKo: isTurbopropAirliner ? '터보프롭 여객기' : '경비행기 · 프로펠러',
+      labelEn: isTurbopropAirliner ? 'Turboprop Airliner' : 'Prop / Light Aircraft',
       scale: isTurbopropAirliner ? 0.92 : 0.8,
       role: 'ga'
     };
@@ -505,17 +507,17 @@ export function classifyAircraftIcon(flight) {
 
   // 8. Business Jet / Small Regional Jet
   if (BIZJET_PREFIXES.some((p) => t === p || t.startsWith(p)) || cat === 'A2') {
-    return { kind: 'bizjet', labelKo: '비즈니스 제트', scale: 0.86, role: 'bizjet' };
+    return { kind: 'bizjet', labelKo: '비즈니스 제트', labelEn: 'Business Jet', scale: 0.86, role: 'bizjet' };
   }
 
   // 9. Speed/altitude heuristic when OpenSky gives no aircraft type or category
   if (t === 'ADS-B' || !t) {
     if ((flight.speedKts || 0) > 0 && (flight.speedKts || 0) < 165 && (flight.altitudeFt || 0) < 14000) {
-      return { kind: 'prop', labelKo: '소형기 (추정)', scale: 0.82, role: 'ga' };
+      return { kind: 'prop', labelKo: '소형기 (추정)', labelEn: 'Light Aircraft', scale: 0.82, role: 'ga' };
     }
   }
 
   // Default: Standard Narrowbody Airliner (A320, B737, E190, etc.)
-  return { kind: 'narrowbody', labelKo: '중형 여객기', scale: 0.98, role: 'commercial' };
+  return { kind: 'narrowbody', labelKo: '중형 여객기', labelEn: 'Narrowbody Jet', scale: 0.98, role: 'commercial' };
 }
 

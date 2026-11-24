@@ -1334,3 +1334,25 @@ body {
   border: 1px solid rgba(148, 163, 184, 0.3);
 }
 
+/* EN / KO Language Switcher Button */
+.lang-toggle-btn {
+  border: 1px solid var(--border-subtle);
+  background: rgba(15, 34, 58, 0.72);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.lang-toggle-btn:hover {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.6);
+  color: #e0f2fe;
+}
+
+

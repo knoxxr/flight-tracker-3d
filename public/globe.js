@@ -133,7 +133,8 @@ export class Globe3D {
       showBorders: options.showBorders ?? true,
       showGraticule: options.showGraticule ?? true,
       altitudeColor: options.altitudeColor ?? true,
-      isLight: options.isLight ?? false
+      isLight: options.isLight ?? false,
+      lang: options.lang ?? 'en'
     };
 
     // Scene data
@@ -974,7 +975,8 @@ export class Globe3D {
         padY = 2.5;
       }
 
-      const textW = ctx.measureText(pl.name).width;
+      const labelText = this.options.lang === 'ko' ? pl.name : (pl.en || pl.name);
+      const textW = ctx.measureText(labelText).width;
       const drawX = isCity ? p.x + 5.5 : p.x;
       const drawY = p.y;
       const boxX1 = isCity ? p.x - 3 : drawX - textW * 0.5 - padX;
@@ -999,7 +1001,7 @@ export class Globe3D {
       ctx.strokeStyle = isLight
         ? `rgba(240, 246, 252, ${0.85 * alpha})`
         : `rgba(4, 12, 24, ${0.86 * alpha})`;
-      ctx.strokeText(pl.name, drawX, drawY);
+      ctx.strokeText(labelText, drawX, drawY);
 
       if (pl.type === 'ocean') {
         ctx.fillStyle = isLight
@@ -1018,7 +1020,7 @@ export class Globe3D {
           ? `rgba(30, 41, 59, ${0.82 * alpha})`
           : `rgba(196, 218, 242, ${0.82 * alpha})`;
       }
-      ctx.fillText(pl.name, drawX, drawY);
+      ctx.fillText(labelText, drawX, drawY);
     }
     ctx.textAlign = 'left';
   }
@@ -1235,7 +1237,7 @@ export class Globe3D {
         ctx.lineWidth = 1.4;
         ctx.stroke();
 
-        const tag = '마지막 수신';
+        const tag = this.options.lang === 'ko' ? '마지막 수신' : 'Last ADS-B';
         ctx.font = '600 9.5px -apple-system, BlinkMacSystemFont, "Noto Sans KR", sans-serif';
         const tw = ctx.measureText(tag).width + 8;
         ctx.fillStyle = isLight ? 'rgba(255,255,255,0.9)' : 'rgba(15, 10, 34, 0.88)';

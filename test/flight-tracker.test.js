@@ -8,6 +8,8 @@ import {
 import { parseAdsbDbResponse, parseHexDbRoute } from '../src/enrichment.js';
 import { OceanicEstimator, advanceAlongGreatCircle, isInsideCoverage } from '../src/oceanic-estimator.js';
 import { resolveAircraftCountry, decodeCallsign, classifyAircraftIcon } from '../public/aviation-meta.js';
+import { I18N_DICTIONARY, getLang, setLang, t } from '../public/i18n.js';
+import { PLACE_LABELS } from '../public/places-data.js';
 import { createAppServer, createIpRateLimiter, parseMetarResponse } from '../src/server.js';
 
 test('classifyAircraftIcon distinguishes aircraft by size and purpose', () => {
@@ -706,4 +708,30 @@ test('HTTP server serves /api/weather/metar with IATA->ICAO resolution, caching,
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test('i18n defaults to English, toggles cleanly between EN and KO, and keeps 100% dictionary & place label parity', () => {
+  assert.equal(getLang(), 'en');
+  assert.equal(t('modeGlobal'), 'Global');
+  assert.equal(t('langButton'), '한국어');
+
+  setLang('ko');
+  assert.equal(getLang(), 'ko');
+  assert.equal(t('modeGlobal'), '전세계');
+  assert.equal(t('langButton'), 'EN');
+
+  setLang('en');
+  assert.equal(getLang(), 'en');
+
+  const enKeys = Object.keys(I18N_DICTIONARY.en).sort();
+  const koKeys = Object.keys(I18N_DICTIONARY.ko).sort();
+  assert.deepEqual(enKeys, koKeys, 'EN and KO i18n dictionaries must contain identical keys');
+
+  for (const pl of PLACE_LABELS) {
+    assert.ok(pl.name && pl.en, `Place ${pl.name || pl.en} must have both Korean and English labels`);
+  }
+
+  const icon = classifyAircraftIcon({ aircraftType: 'B77W', callsign: 'KAL081' });
+  assert.ok(icon.labelEn && icon.labelKo);
+});
+
 
