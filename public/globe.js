@@ -1,4 +1,5 @@
 import { WORLD_POLYGONS, CITY_LIGHTS } from './world-data.js';
+import { PLACE_LABELS } from './places-data.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -43,6 +44,55 @@ function densifyPolygon(poly, maxStepDeg = 2.8) {
   return vecs;
 }
 
+function densifyFlatRing(flat, scale = 100, maxStepDeg = 2.6, closed = true) {
+  const count = flat.length >> 1;
+  const vecs = [];
+  const limit = closed ? count : count - 1;
+  for (let i = 0; i < limit; i++) {
+    const lonA = flat[i * 2] / scale;
+    const latA = flat[i * 2 + 1] / scale;
+    const nextIdx = (i + 1) % count;
+    const lonB = flat[nextIdx * 2] / scale;
+    const latB = flat[nextIdx * 2 + 1] / scale;
+    const a = latLonToVec3(latA, lonA);
+    const b = latLonToVec3(latB, lonB);
+    const dot = Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+    const angleDeg = Math.acos(dot) * RAD2DEG;
+    const steps = Math.max(1, Math.ceil(angleDeg / maxStepDeg));
+    for (let s = 0; s < steps; s++) {
+      vecs.push(s === 0 ? a : slerpVec3(a, b, s / steps));
+    }
+  }
+  if (!closed && count > 0) {
+    vecs.push(latLonToVec3(flat[(count - 1) * 2 + 1] / scale, flat[(count - 1) * 2] / scale));
+  }
+  return vecs;
+}
+
+function buildGeoEntry(vecs) {
+  let sx = 0;
+  let sy = 0;
+  let sz = 0;
+  for (let i = 0; i < vecs.length; i++) {
+    sx += vecs[i][0];
+    sy += vecs[i][1];
+    sz += vecs[i][2];
+  }
+  const len = Math.hypot(sx, sy, sz);
+  if (len < 1e-4) {
+    return { vecs, center: [0, 1, 0], sinRadius: 1, isLarge: true };
+  }
+  const center = [sx / len, sy / len, sz / len];
+  let minDot = 1;
+  for (let i = 0; i < vecs.length; i++) {
+    const d = vecs[i][0] * center[0] + vecs[i][1] * center[1] + vecs[i][2] * center[2];
+    if (d < minDot) minDot = d;
+  }
+  const isLarge = minDot < 0.25;
+  const sinRadius = isLarge ? 1 : Math.sqrt(Math.max(0, 1 - minDot * minDot));
+  return { vecs, center, sinRadius, isLarge };
+}
+
 function computeSubsolarPoint(date = new Date()) {
   const start = new Date(Date.UTC(date.getUTCFullYear(), 0, 0));
   const dayOfYear = (date - start) / 86400000;
@@ -77,6 +127,8 @@ export class Globe3D {
       dayNight: options.dayNight ?? true,
       showTrails: options.showTrails ?? true,
       showAirports: options.showAirports ?? true,
+      showPlaces: options.showPlaces ?? true,
+      showBorders: options.showBorders ?? true,
       showGraticule: options.showGraticule ?? true,
       altitudeColor: options.altitudeColor ?? true,
       isLight: options.isLight ?? false
@@ -89,9 +141,18 @@ export class Globe3D {
     this.hoveredIcao = null;
     this.followSelected = false;
 
-    // Pre-densify world coastline polygons onto unit sphere
-    this.landPolygons = WORLD_POLYGONS.map((poly) => densifyPolygon(poly, 2.8));
+    // Boot immediately with lightweight coastline polygons, then upgrade seamlessly to 50m detailed vector map
+    this.landPolygons = WORLD_POLYGONS.map((poly) => buildGeoEntry(densifyPolygon(poly, 2.8)));
+    this.borderLines = [];
+    this.lakePolygons = [];
     this.cityVecs = CITY_LIGHTS.map(([lat, lon]) => latLonToVec3(lat, lon));
+    this.places = PLACE_LABELS
+      .map((p) => ({ ...p, vec: latLonToVec3(p.lat, p.lon) }))
+      .sort((a, b) => {
+        const tierOrder = { city1: 0, city2: 1, country: 2, ocean: 3 };
+        if (tierOrder[a.type] !== tierOrder[b.type]) return tierOrder[a.type] - tierOrder[b.type];
+        return (b.priority || 0) - (a.priority || 0);
+      });
     this.stars = this._generateStarfield(140);
 
     // Hit-test cache for pointer interaction
@@ -108,6 +169,21 @@ export class Globe3D {
 
     this._bindEvents();
     this.resize();
+  }
+
+  /**
+   * Load high-resolution Natural Earth 50m land polygons, country borders, and lakes.
+   */
+  setDetailedGeo(geo) {
+    if (!geo || !Array.isArray(geo.land)) return;
+    const scale = geo.scale || 100;
+    this.landPolygons = geo.land.map((ring) => buildGeoEntry(densifyFlatRing(ring, scale, 2.6, true)));
+    this.borderLines = Array.isArray(geo.borders)
+      ? geo.borders.map((line) => buildGeoEntry(densifyFlatRing(line, scale, 2.6, false)))
+      : [];
+    this.lakePolygons = Array.isArray(geo.lakes)
+      ? geo.lakes.map((ring) => buildGeoEntry(densifyFlatRing(ring, scale, 2.6, true)))
+      : [];
   }
 
   _generateStarfield(count) {
@@ -498,13 +574,19 @@ export class Globe3D {
     ctx.fillStyle = oceanGrad;
     ctx.fillRect(cx - R - 2, cy - R - 2, R * 2 + 4, R * 2 + 4);
 
-    // 4. Lat/Lon Graticule
+    // 4. Adaptive Lat/Lon Graticule (subdivides cleanly as user zooms in)
     if (this.options.showGraticule) {
       this._drawGraticule(ctx, mat, cx, cy, R, isLight);
     }
 
-    // 5. Continents & Coastlines (horizon-clipped)
+    // 5. High-Resolution Continents, Islands, Major Lakes & Country Borders
     this._drawLandmasses(ctx, mat, cx, cy, R, isLight);
+    if (this.lakePolygons.length > 0) {
+      this._drawLakes(ctx, mat, cx, cy, R, isLight);
+    }
+    if (this.options.showBorders && this.borderLines.length > 0) {
+      this._drawBorders(ctx, mat, cx, cy, R, isLight);
+    }
 
     // 6. Real-time Day/Night terminator & Night City Lights
     if (this.options.dayNight) {
@@ -521,9 +603,15 @@ export class Globe3D {
     ctx.arc(cx, cy, R, 0, Math.PI * 2);
     ctx.fill();
 
-    // 7. Airport Hubs (on globe surface)
+    // 7. Geographic Place Names & Airport Hubs (shared collision boxes so labels never overlap)
+    const labelBoxes = [];
+    if (this.options.showPlaces) {
+      this._drawPlaces(ctx, mat, cx, cy, R, isLight, labelBoxes);
+    }
+
+    // 8. Airport Hubs (on globe surface)
     if (this.options.showAirports) {
-      this._drawAirports(ctx, mat, cx, cy, R, isLight);
+      this._drawAirports(ctx, mat, cx, cy, R, isLight, labelBoxes);
     }
 
     ctx.restore(); // End planet disc clip
@@ -535,7 +623,7 @@ export class Globe3D {
     ctx.arc(cx, cy, R, 0, Math.PI * 2);
     ctx.stroke();
 
-    // 8. Selected Flight 3D Live Track & Projected Heading Vector (or Route Arc if available)
+    // 9. Selected Flight 3D Live Track & Projected Heading Vector (or Route Arc if available)
     const selectedFlight = this.selectedIcao
       ? this.flights.find((f) => f.icao24 === this.selectedIcao)
       : null;
@@ -547,25 +635,39 @@ export class Globe3D {
       }
     }
 
-    // 9. Aircraft Markers (depth-sorted, elevated in 3D space)
+    // 10. Aircraft Markers (depth-sorted, elevated in 3D space)
     this._drawFlights(ctx, mat, cx, cy, R, isLight, now);
 
     ctx.restore();
   }
 
   _drawGraticule(ctx, mat, cx, cy, R, isLight) {
-    ctx.lineWidth = 0.7;
+    const stepDeg = this.zoom >= 12 ? 2 : (this.zoom >= 5.5 ? 5 : (this.zoom >= 2.2 ? 15 : 30));
+    const sampleStep = this.zoom >= 8 ? 1 : (this.zoom >= 3.5 ? 2 : 4);
+    const W = this.width;
+    const H = this.height;
+    // Half angular viewport span for fast culling when deeply zoomed
+    const spanDeg = this.zoom > 1.8 ? Math.min(95, (Math.max(W, H) / R) * RAD2DEG * 0.78 + stepDeg * 2) : 180;
+    const minLat = Math.max(-80, Math.floor((this.camLat - spanDeg) / stepDeg) * stepDeg);
+    const maxLat = Math.min(80, Math.ceil((this.camLat + spanDeg) / stepDeg) * stepDeg);
 
-    // Parallels (every 30 deg)
-    for (let lat = -60; lat <= 60; lat += 30) {
+    ctx.lineWidth = this.zoom >= 5 ? 0.55 : 0.7;
+
+    // Parallels
+    for (let lat = minLat; lat <= maxLat; lat += stepDeg) {
+      const isMajor = lat === 0 || lat % 30 === 0;
       ctx.strokeStyle = lat === 0
-        ? (isLight ? 'rgba(30, 64, 110, 0.22)' : 'rgba(125, 211, 252, 0.16)')
-        : (isLight ? 'rgba(30, 64, 110, 0.10)' : 'rgba(148, 184, 218, 0.08)');
+        ? (isLight ? 'rgba(30, 64, 110, 0.24)' : 'rgba(125, 211, 252, 0.18)')
+        : isMajor
+          ? (isLight ? 'rgba(30, 64, 110, 0.11)' : 'rgba(148, 184, 218, 0.09)')
+          : (isLight ? 'rgba(30, 64, 110, 0.06)' : 'rgba(148, 184, 218, 0.05)');
       ctx.beginPath();
       let penDown = false;
-      for (let lon = -180; lon <= 180; lon += 4) {
+      const lonStart = spanDeg < 120 ? this.camLon - spanDeg * 1.4 : -180;
+      const lonEnd = spanDeg < 120 ? this.camLon + spanDeg * 1.4 : 180;
+      for (let lon = lonStart; lon <= lonEnd; lon += sampleStep) {
         const p = this._projectVec(latLonToVec3(lat, lon), mat, cx, cy, R);
-        if (p.z > 0) {
+        if (p.z > 0 && p.x >= -60 && p.x <= W + 60 && p.y >= -60 && p.y <= H + 60) {
           if (!penDown) {
             ctx.moveTo(p.x, p.y);
             penDown = true;
@@ -579,14 +681,21 @@ export class Globe3D {
       ctx.stroke();
     }
 
-    // Meridians (every 30 deg)
-    ctx.strokeStyle = isLight ? 'rgba(30, 64, 110, 0.10)' : 'rgba(148, 184, 218, 0.08)';
-    for (let lon = -180; lon < 180; lon += 30) {
+    // Meridians
+    const lonSpan = Math.min(180, spanDeg / Math.max(0.25, Math.cos(this.camLat * DEG2RAD)));
+    const lonMin = lonSpan < 170 ? Math.floor((this.camLon - lonSpan) / stepDeg) * stepDeg : -180;
+    const lonMax = lonSpan < 170 ? Math.ceil((this.camLon + lonSpan) / stepDeg) * stepDeg : 180 - stepDeg;
+    for (let lon = lonMin; lon <= lonMax; lon += stepDeg) {
+      const normLon = ((((lon + 180) % 360) + 360) % 360) - 180;
+      const isMajor = Math.abs(normLon) % 30 === 0;
+      ctx.strokeStyle = isMajor
+        ? (isLight ? 'rgba(30, 64, 110, 0.11)' : 'rgba(148, 184, 218, 0.09)')
+        : (isLight ? 'rgba(30, 64, 110, 0.06)' : 'rgba(148, 184, 218, 0.05)');
       ctx.beginPath();
       let penDown = false;
-      for (let lat = -84; lat <= 84; lat += 4) {
+      for (let lat = minLat; lat <= maxLat; lat += sampleStep) {
         const p = this._projectVec(latLonToVec3(lat, lon), mat, cx, cy, R);
-        if (p.z > 0) {
+        if (p.z > 0 && p.x >= -60 && p.x <= W + 60 && p.y >= -60 && p.y <= H + 60) {
           if (!penDown) {
             ctx.moveTo(p.x, p.y);
             penDown = true;
@@ -601,21 +710,40 @@ export class Globe3D {
     }
   }
 
-  _drawLandmasses(ctx, mat, cx, cy, R, isLight) {
-    ctx.fillStyle = isLight ? '#e8ece6' : '#16283e';
-    ctx.strokeStyle = isLight ? '#8ea6b8' : '#2d4d70';
-    ctx.lineWidth = Math.min(1.4, 0.75 + this.zoom * 0.18);
+  _drawPolygonEntries(ctx, entries, mat, cx, cy, R, minPxRadius = 1.1) {
+    const W = this.width;
+    const H = this.height;
 
-    for (const poly of this.landPolygons) {
+    for (let eIdx = 0; eIdx < entries.length; eIdx++) {
+      const entry = entries[eIdx];
+      if (!entry.isLarge) {
+        if (entry.sinRadius * R < minPxRadius) continue;
+        const rc = this._rotateVec(entry.center, mat);
+        if (rc[2] < -entry.sinRadius - 0.02) continue;
+        const radPx = entry.sinRadius * R + 16;
+        const scx = cx + rc[0] * R;
+        const scy = cy - rc[1] * R;
+        if (scx + radPx < 0 || scx - radPx > W || scy + radPx < 0 || scy - radPx > H) continue;
+      }
+
+      const poly = entry.vecs;
       const n = poly.length;
       const rotated = new Array(n);
       let anyVisible = false;
+      let anyOnScreen = false;
       for (let i = 0; i < n; i++) {
         const r = this._rotateVec(poly[i], mat);
         rotated[i] = r;
-        if (r[2] >= 0) anyVisible = true;
+        if (r[2] >= 0) {
+          anyVisible = true;
+          if (!anyOnScreen) {
+            const sx = cx + r[0] * R;
+            const sy = cy - r[1] * R;
+            if (sx >= -80 && sx <= W + 80 && sy >= -80 && sy <= H + 80) anyOnScreen = true;
+          }
+        }
       }
-      if (!anyVisible) continue;
+      if (!anyVisible || (!entry.isLarge && !anyOnScreen)) continue;
 
       // Start at a visible vertex so hidden chains cleanly pair I_out -> I_in
       let startIdx = 0;
@@ -645,7 +773,6 @@ export class Globe3D {
         if (currVis && !inHidden) {
           clipped.push([curr[0], curr[1]]);
         } else if (!currVis && !inHidden) {
-          // Crossing visible -> hidden: compute horizon intersection
           const t = prev[2] / (prev[2] - curr[2]);
           let ix = prev[0] + (curr[0] - prev[0]) * t;
           let iy = prev[1] + (curr[1] - prev[1]) * t;
@@ -670,7 +797,6 @@ export class Globe3D {
           hiddenAngleDelta += d;
           prevHiddenAngle = curAng;
         } else if (currVis && inHidden) {
-          // Crossing hidden -> visible: compute horizon re-entry & trace horizon arc
           const t = prev[2] / (prev[2] - curr[2]);
           let ix = prev[0] + (curr[0] - prev[0]) * t;
           let iy = prev[1] + (curr[1] - prev[1]) * t;
@@ -704,6 +830,175 @@ export class Globe3D {
       ctx.fill();
       ctx.stroke();
     }
+  }
+
+  _drawLandmasses(ctx, mat, cx, cy, R, isLight) {
+    ctx.fillStyle = isLight ? '#e8ece6' : '#19304a';
+    ctx.strokeStyle = isLight ? '#7e9bb0' : '#3e6b99';
+    ctx.lineWidth = Math.min(1.5, 0.78 + Math.log2(Math.max(1, this.zoom)) * 0.24);
+    this._drawPolygonEntries(ctx, this.landPolygons, mat, cx, cy, R, 1.15);
+  }
+
+  _drawLakes(ctx, mat, cx, cy, R, isLight) {
+    ctx.fillStyle = isLight ? '#a6cde9' : '#0c223c';
+    ctx.strokeStyle = isLight ? '#7e9bb0' : '#315982';
+    ctx.lineWidth = 0.7;
+    this._drawPolygonEntries(ctx, this.lakePolygons, mat, cx, cy, R, 1.8);
+  }
+
+  _drawBorders(ctx, mat, cx, cy, R, isLight) {
+    const W = this.width;
+    const H = this.height;
+    const alpha = Math.min(0.52, 0.22 + Math.log2(Math.max(1, this.zoom)) * 0.09);
+    ctx.strokeStyle = isLight
+      ? `rgba(71, 95, 120, ${alpha})`
+      : `rgba(148, 194, 232, ${alpha})`;
+    ctx.lineWidth = this.zoom >= 4 ? 1.0 : 0.75;
+
+    ctx.beginPath();
+    for (let bIdx = 0; bIdx < this.borderLines.length; bIdx++) {
+      const entry = this.borderLines[bIdx];
+      if (!entry.isLarge) {
+        if (entry.sinRadius * R < 2.2) continue;
+        const rc = this._rotateVec(entry.center, mat);
+        if (rc[2] < -entry.sinRadius - 0.02) continue;
+        const radPx = entry.sinRadius * R + 16;
+        const scx = cx + rc[0] * R;
+        const scy = cy - rc[1] * R;
+        if (scx + radPx < 0 || scx - radPx > W || scy + radPx < 0 || scy - radPx > H) continue;
+      }
+
+      const vecs = entry.vecs;
+      let penDown = false;
+      for (let i = 0; i < vecs.length; i++) {
+        const r = this._rotateVec(vecs[i], mat);
+        if (r[2] > 0.01) {
+          const sx = cx + r[0] * R;
+          const sy = cy - r[1] * R;
+          if (!penDown) {
+            ctx.moveTo(sx, sy);
+            penDown = true;
+          } else {
+            ctx.lineTo(sx, sy);
+          }
+        } else {
+          penDown = false;
+        }
+      }
+    }
+    ctx.stroke();
+  }
+
+  _drawPlaces(ctx, mat, cx, cy, R, isLight, placedBoxes = []) {
+    const W = this.width;
+    const H = this.height;
+    const zoom = this.zoom;
+
+    const overlaps = (x1, y1, x2, y2) => {
+      for (let i = 0; i < placedBoxes.length; i++) {
+        const b = placedBoxes[i];
+        if (x1 < b[2] && x2 > b[0] && y1 < b[3] && y2 > b[1]) return true;
+      }
+      return false;
+    };
+
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+
+    for (let i = 0; i < this.places.length; i++) {
+      const pl = this.places[i];
+      if (zoom < (pl.minZoom ?? 0.85)) continue;
+      if (pl.maxZoom && zoom > pl.maxZoom) continue;
+
+      const p = this._projectVec(pl.vec, mat, cx, cy, R);
+      if (p.z <= 0.14) continue;
+      if (p.x < 18 || p.x > W - 18 || p.y < 18 || p.y > H - 18) continue;
+
+      const horizonFade = Math.min(1, (p.z - 0.14) * 2.6);
+      const maxFade = pl.maxZoom ? Math.min(1, (pl.maxZoom - zoom) / 1.1) : 1;
+      const alpha = horizonFade * maxFade;
+      if (alpha < 0.08) continue;
+
+      let fontSize = 11;
+      let padX = 5;
+      let padY = 3;
+      let isCity = false;
+
+      if (pl.type === 'ocean') {
+        fontSize = zoom >= 2.2 ? 11.5 : 10.5;
+        ctx.font = `italic 500 ${fontSize}px -apple-system, BlinkMacSystemFont, "Noto Sans KR", sans-serif`;
+        ctx.textAlign = 'center';
+        padX = 12;
+        padY = 6;
+      } else if (pl.type === 'country') {
+        fontSize = zoom >= 2.4 ? 12 : 10.5;
+        ctx.font = `600 ${fontSize}px -apple-system, BlinkMacSystemFont, "Noto Sans KR", sans-serif`;
+        ctx.textAlign = 'center';
+        padX = 8;
+        padY = 5;
+      } else if (pl.type === 'city1') {
+        isCity = true;
+        fontSize = zoom >= 3.5 ? 12 : 10.8;
+        ctx.font = `600 ${fontSize}px -apple-system, BlinkMacSystemFont, "Noto Sans KR", sans-serif`;
+        ctx.textAlign = 'left';
+        padX = 5;
+        padY = 3;
+      } else {
+        isCity = true;
+        fontSize = zoom >= 6 ? 11.2 : 10.2;
+        ctx.font = `500 ${fontSize}px -apple-system, BlinkMacSystemFont, "Noto Sans KR", sans-serif`;
+        ctx.textAlign = 'left';
+        padX = 4;
+        padY = 2.5;
+      }
+
+      const textW = ctx.measureText(pl.name).width;
+      const drawX = isCity ? p.x + 5.5 : p.x;
+      const drawY = p.y;
+      const boxX1 = isCity ? p.x - 3 : drawX - textW * 0.5 - padX;
+      const boxX2 = isCity ? drawX + textW + padX : drawX + textW * 0.5 + padX;
+      const boxY1 = drawY - fontSize * 0.6 - padY;
+      const boxY2 = drawY + fontSize * 0.6 + padY;
+
+      if (overlaps(boxX1, boxY1, boxX2, boxY2)) continue;
+      placedBoxes.push([boxX1, boxY1, boxX2, boxY2]);
+
+      if (isCity) {
+        const dotR = pl.type === 'city1' ? (zoom >= 3 ? 2.1 : 1.7) : 1.35;
+        ctx.fillStyle = isLight
+          ? `rgba(15, 23, 42, ${0.75 * alpha})`
+          : `rgba(226, 240, 255, ${0.82 * alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, dotR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.lineWidth = pl.type === 'ocean' ? 2.2 : 2.8;
+      ctx.strokeStyle = isLight
+        ? `rgba(240, 246, 252, ${0.85 * alpha})`
+        : `rgba(4, 12, 24, ${0.86 * alpha})`;
+      ctx.strokeText(pl.name, drawX, drawY);
+
+      if (pl.type === 'ocean') {
+        ctx.fillStyle = isLight
+          ? `rgba(30, 88, 145, ${0.52 * alpha})`
+          : `rgba(125, 194, 244, ${0.46 * alpha})`;
+      } else if (pl.type === 'country') {
+        ctx.fillStyle = isLight
+          ? `rgba(51, 65, 85, ${0.72 * alpha})`
+          : `rgba(186, 214, 242, ${0.68 * alpha})`;
+      } else if (pl.type === 'city1') {
+        ctx.fillStyle = isLight
+          ? `rgba(15, 23, 42, ${0.9 * alpha})`
+          : `rgba(232, 243, 255, ${0.9 * alpha})`;
+      } else {
+        ctx.fillStyle = isLight
+          ? `rgba(30, 41, 59, ${0.82 * alpha})`
+          : `rgba(196, 218, 242, ${0.82 * alpha})`;
+      }
+      ctx.fillText(pl.name, drawX, drawY);
+    }
+    ctx.textAlign = 'left';
   }
 
   _drawTerminatorAndCities(ctx, mat, sunWorld, sunCam, cx, cy, R, isLight) {
@@ -745,28 +1040,59 @@ export class Globe3D {
     }
   }
 
-  _drawAirports(ctx, mat, cx, cy, R, isLight) {
-    const showLabels = this.zoom >= 1.55;
-    ctx.font = '600 10px ui-monospace, SFMono-Regular, Menlo, monospace';
+  _drawAirports(ctx, mat, cx, cy, R, isLight, placedBoxes = []) {
+    const showLabels = this.zoom >= (this.options.showPlaces ? 2.1 : 1.55);
+    const W = this.width;
+    const H = this.height;
+    ctx.font = '600 9.5px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.lineJoin = 'round';
+
+    const overlaps = (x1, y1, x2, y2) => {
+      for (let i = 0; i < placedBoxes.length; i++) {
+        const b = placedBoxes[i];
+        if (x1 < b[2] && x2 > b[0] && y1 < b[3] && y2 > b[1]) return true;
+      }
+      return false;
+    };
 
     for (const a of this.airports) {
       const p = this._projectVec(a.vec, mat, cx, cy, R);
       if (p.z <= 0.08) continue;
+      if (p.x < -10 || p.x > W + 10 || p.y < -10 || p.y > H + 10) continue;
       const alpha = Math.min(1, p.z * 2.2);
 
       ctx.fillStyle = isLight
-        ? `rgba(14, 116, 144, ${0.72 * alpha})`
-        : `rgba(148, 210, 245, ${0.62 * alpha})`;
+        ? `rgba(14, 116, 144, ${0.76 * alpha})`
+        : `rgba(56, 189, 248, ${0.72 * alpha})`;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, this.zoom > 2 ? 2.6 : 1.9, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, this.zoom > 2 ? 2.4 : 1.7, 0, Math.PI * 2);
       ctx.fill();
 
       if (showLabels && p.z > 0.25) {
-        ctx.fillStyle = isLight
-          ? `rgba(15, 23, 42, ${0.78 * alpha})`
-          : `rgba(203, 224, 245, ${0.78 * alpha})`;
-        ctx.fillText(a.iata, p.x + 5, p.y);
+        const w = ctx.measureText(a.iata).width;
+        const candidates = [
+          [p.x + 5, p.y],
+          [p.x + 5, p.y + 10],
+          [p.x - w - 5, p.y]
+        ];
+        for (const [lx, ly] of candidates) {
+          const box = [lx - 2, ly - 6, lx + w + 3, ly + 6];
+          if (!overlaps(box[0], box[1], box[2], box[3])) {
+            placedBoxes.push(box);
+            ctx.lineWidth = 2.4;
+            ctx.strokeStyle = isLight
+              ? `rgba(240, 246, 252, ${0.82 * alpha})`
+              : `rgba(4, 12, 24, ${0.86 * alpha})`;
+            ctx.strokeText(a.iata, lx, ly);
+            ctx.fillStyle = isLight
+              ? `rgba(14, 116, 144, ${0.88 * alpha})`
+              : `rgba(125, 211, 252, ${0.86 * alpha})`;
+            ctx.fillText(a.iata, lx, ly);
+            break;
+          }
+        }
       }
     }
   }

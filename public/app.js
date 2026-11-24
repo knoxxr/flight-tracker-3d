@@ -935,6 +935,7 @@ function bindUI() {
 
   const bindToggle = (id, optKey) => {
     const el = document.getElementById(id);
+    if (!el) return;
     el.addEventListener('click', () => {
       const next = !globe.options[optKey];
       globe.setOption(optKey, next);
@@ -944,6 +945,7 @@ function bindUI() {
   bindToggle('toggle-rotate', 'autoRotate');
   bindToggle('toggle-daynight', 'dayNight');
   bindToggle('toggle-trails', 'showTrails');
+  bindToggle('toggle-places', 'showPlaces');
   bindToggle('toggle-airports', 'showAirports');
 
   document.getElementById('zoom-in-btn').addEventListener('click', () => {
@@ -974,6 +976,18 @@ function bindUI() {
   window.addEventListener('orientationchange', () => setTimeout(handleResize, 120));
 }
 
+async function loadDetailedGeo() {
+  try {
+    const res = await fetch('./world-geo.json');
+    if (res.ok) {
+      const geo = await res.json();
+      globe.setDetailedGeo(geo);
+    }
+  } catch {
+    // Keep built-in coarse polygons as fallback
+  }
+}
+
 function updateClock() {
   utcClockEl.textContent = `${new Date().toISOString().slice(11, 19)} UTC`;
   if (state.panelMode === 'detail' && state.selectedIcao) {
@@ -1001,6 +1015,8 @@ async function init() {
   setInterval(updateClock, 1000);
   requestAnimationFrame(animate);
 
+  // Load 50m high-detail coastlines, country borders & lakes in parallel with backend detection
+  loadDetailedGeo();
   state.backendAvailable = await detectBackend();
   await loadAirports();
   connectLiveFeed(true);
