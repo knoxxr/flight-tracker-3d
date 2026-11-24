@@ -12,6 +12,8 @@ const state = {
   rawFlights: [],
   flights: [],
   trackHistory: new Map(),
+  enrichmentCache: new Map(),
+  enrichmentPending: new Set(),
   searchQuery: '',
   selectedIcao: null,
   followSelected: false,
@@ -195,6 +197,161 @@ function selectFlight(icao24, fly = true) {
   globe.setSelectedFlight(icao24, fly);
   setPanelMode('detail');
   renderFlightDetail();
+  const f = state.rawFlights.find((item) => item.icao24 === icao24);
+  if (f) fetchFlightEnrichment(f);
+}
+
+const CATEGORY_LABELS = {
+  A1: '소형기 (Light)',
+  A2: '중소형기 (Small)',
+  A3: '대형기 (Large)',
+  A4: '대형 와류기 (High Vortex)',
+  A5: '초대형기 (Heavy)',
+  A6: '고성능기 (High Perf)',
+  A7: '헬리콥터 (Rotorcraft)',
+  B1: '글라이더',
+  B2: '기구/비행선',
+  B4: '초경량기',
+  B6: '무인기 (UAV)'
+};
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const dLat = (lat2 - lat1) * DEG2RAD;
+  const dLon = (lon2 - lon1) * DEG2RAD;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * DEG2RAD) * Math.cos(lat2 * DEG2RAD) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371.0088 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function compassDir(deg) {
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  return dirs[Math.round((((deg % 360) + 360) % 360) / 45) % 8];
+}
+
+function getFlightPhase(f) {
+  if (f.squawk === '7700' || f.emergency === 'general') return { label: '비상 (7700)', cls: 'emergency' };
+  if (f.squawk === '7600') return { label: '통신두절 (7600)', cls: 'emergency' };
+  if (f.squawk === '7500') return { label: '긴급 (7500)', cls: 'emergency' };
+  if (f.onGround) return { label: '지상', cls: '' };
+  const vr = f.verticalRateFpm || 0;
+  const alt = f.altitudeFt || 0;
+  if (vr > 350) return { label: alt < 10000 ? '이륙·상승' : '상승 중', cls: 'climbing' };
+  if (vr < -350) return { label: alt < 10000 ? '접근·착륙' : '하강 중', cls: 'descending' };
+  if (alt >= 18000) return { label: `순항 · FL${Math.round(alt / 100)}`, cls: '' };
+  return { label: '비행 중', cls: '' };
+}
+
+function formatSquawkText(sqk, emergency) {
+  if (!sqk || sqk === '----') return 'SQK ----';
+  if (sqk === '7700') return 'SQK 7700 · 비상';
+  if (sqk === '7600') return 'SQK 7600 · 통신두절';
+  if (sqk === '7500') return 'SQK 7500 · 긴급';
+  if (emergency) return `SQK ${sqk} · ${emergency}`;
+  return `SQK ${sqk}`;
+}
+
+function formatDurationKorean(minutes) {
+  if (!minutes || minutes <= 0) return '';
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h > 0 ? `${h}시간 ${m}분` : `${m}분`;
+}
+
+function applyEnrichmentToFlight(f) {
+  const info = state.enrichmentCache.get(f.icao24);
+  if (!info || !info.flightroute) return f;
+  const orig = info.flightroute.origin;
+  const dest = info.flightroute.destination;
+  if (orig && dest && typeof orig.lat === 'number' && typeof dest.lat === 'number') {
+    const totalKm = Math.max(1, haversineKm(orig.lat, orig.lon, dest.lat, dest.lon));
+    const flownKm = haversineKm(orig.lat, orig.lon, f.lat, f.lon);
+    const remainKm = haversineKm(f.lat, f.lon, dest.lat, dest.lon);
+    const progress = Math.max(0.02, Math.min(0.98, flownKm / (flownKm + remainKm || totalKm)));
+    return {
+      ...f,
+      origin: orig.iata || orig.icao,
+      destination: dest.iata || dest.icao,
+      originCoords: [orig.lat, orig.lon],
+      destCoords: [dest.lat, dest.lon],
+      progress
+    };
+  }
+  return f;
+}
+
+async function fetchFlightEnrichment(flight) {
+  const icao = flight.icao24;
+  if (!icao || state.enrichmentCache.has(icao) || state.enrichmentPending.has(icao)) return;
+  state.enrichmentPending.add(icao);
+  if (state.selectedIcao === icao) {
+    const statusEl = document.getElementById('detail-enrich-status');
+    if (statusEl) statusEl.textContent = '추가 정보 조회 중...';
+  }
+
+  try {
+    let data = null;
+    if (state.backendAvailable) {
+      const qs = new URLSearchParams({ callsign: flight.callsign || '' });
+      const res = await fetch(`./api/enrich/${encodeURIComponent(icao)}?${qs.toString()}`);
+      if (res.ok) data = await res.json();
+    } else {
+      // Static GitHub Pages fallback: query CORS-open adsbdb.com directly
+      const call = (flight.callsign || '').replace(/[^A-Z0-9]/gi, '');
+      const url = call && call.toLowerCase() !== icao
+        ? `https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(icao.toUpperCase())}?callsign=${encodeURIComponent(call)}`
+        : `https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(icao.toUpperCase())}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const raw = await res.json();
+        const r = raw?.response || {};
+        const ac = r.aircraft && typeof r.aircraft === 'object' ? r.aircraft : null;
+        const fr = r.flightroute && typeof r.flightroute === 'object' ? r.flightroute : null;
+        data = {
+          ok: Boolean(ac || fr),
+          aircraft: ac ? {
+            type: ac.type,
+            icaoType: ac.icao_type,
+            manufacturer: ac.manufacturer,
+            registration: ac.registration,
+            owner: ac.registered_owner,
+            ownerCountry: ac.registered_owner_country_name
+          } : null,
+          flightroute: fr ? {
+            callsignIata: fr.callsign_iata,
+            airline: fr.airline,
+            origin: fr.origin ? {
+              iata: fr.origin.iata_code || fr.origin.icao_code,
+              icao: fr.origin.icao_code,
+              name: fr.origin.name,
+              city: fr.origin.municipality,
+              lat: fr.origin.latitude,
+              lon: fr.origin.longitude
+            } : null,
+            destination: fr.destination ? {
+              iata: fr.destination.iata_code || fr.destination.icao_code,
+              icao: fr.destination.icao_code,
+              name: fr.destination.name,
+              city: fr.destination.municipality,
+              lat: fr.destination.latitude,
+              lon: fr.destination.longitude
+            } : null
+          } : null,
+          photo: ac && (ac.url_photo || ac.url_photo_thumbnail) ? {
+            url: ac.url_photo || ac.url_photo_thumbnail,
+            credit: 'adsbdb'
+          } : null
+        };
+      }
+    }
+
+    state.enrichmentCache.set(icao, data || { ok: false, aircraft: null, flightroute: null, photo: null });
+  } catch {
+    state.enrichmentCache.set(icao, { ok: false, aircraft: null, flightroute: null, photo: null });
+  } finally {
+    state.enrichmentPending.delete(icao);
+    if (state.selectedIcao === icao && state.panelMode === 'detail') {
+      renderFlightDetail();
+    }
+  }
 }
 
 function renderFlightList() {
@@ -285,30 +442,155 @@ function renderFlightDetail() {
   const f = state.rawFlights.find((item) => item.icao24 === state.selectedIcao);
   if (!f) return;
 
-  document.getElementById('detail-callsign').textContent = f.callsign;
-  document.getElementById('detail-aircraft-type').textContent = f.aircraftType || 'ADS-B';
-  document.getElementById('detail-airline').textContent = f.originCountry || 'Live ADS-B';
+  const enriched = state.enrichmentCache.get(f.icao24);
+  const acInfo = enriched?.aircraft;
+  const routeInfo = enriched?.flightroute;
+  const photoInfo = enriched?.photo;
+
+  const icaoType = acInfo?.icaoType || f.aircraftType || 'ADS-B';
+  const airlineDisplay = routeInfo?.airline?.name || acInfo?.owner || f.originCountry || 'Live ADS-B';
+  const regDisplay = acInfo?.registration || f.registration || '---';
+  const countryDisplay = acInfo?.ownerCountry || routeInfo?.airline?.country || f.originCountry || '---';
+
+  document.getElementById('detail-callsign').textContent = routeInfo?.callsignIata
+    ? `${f.callsign} (${routeInfo.callsignIata})`
+    : f.callsign;
+  document.getElementById('detail-aircraft-type').textContent = icaoType;
+  document.getElementById('detail-airline').textContent = airlineDisplay;
+
+  // Flight Phase Badge
+  const phase = getFlightPhase(f);
+  const phaseEl = document.getElementById('detail-phase');
+  phaseEl.textContent = phase.label;
+  phaseEl.className = `phase-tag${phase.cls ? ' ' + phase.cls : ''}`;
+
+  // Aircraft Photo Card
+  const photoCardEl = document.getElementById('detail-photo-card');
+  const photoImgEl = document.getElementById('detail-photo-img');
+  if (photoInfo?.url) {
+    if (photoImgEl.dataset.src !== photoInfo.url) {
+      photoImgEl.dataset.src = photoInfo.url;
+      photoImgEl.dataset.failed = '';
+      photoImgEl.src = photoInfo.url;
+      photoImgEl.onerror = () => {
+        photoImgEl.dataset.failed = '1';
+        photoCardEl.classList.add('hidden');
+      };
+    }
+    const fullModel = [acInfo?.manufacturer, acInfo?.type].filter(Boolean).join(' ') || f.aircraftLabel || icaoType;
+    document.getElementById('detail-photo-model').textContent = `${fullModel} · ${regDisplay}`;
+    document.getElementById('detail-photo-credit').textContent = photoInfo.credit || '';
+    if (photoImgEl.dataset.failed === '1') {
+      photoCardEl.classList.add('hidden');
+    } else {
+      photoCardEl.classList.remove('hidden');
+    }
+  } else {
+    photoCardEl.classList.add('hidden');
+  }
+
+  // Real Origin -> Destination Route Card
+  const routeCardEl = document.getElementById('detail-route-card');
+  if (routeInfo?.origin && routeInfo?.destination) {
+    const o = routeInfo.origin;
+    const d = routeInfo.destination;
+    document.getElementById('detail-origin-iata').textContent = o.iata || o.icao || '---';
+    document.getElementById('detail-origin-city').textContent = o.city || o.name || '출발지';
+    document.getElementById('detail-dest-iata').textContent = d.iata || d.icao || '---';
+    document.getElementById('detail-dest-city').textContent = d.city || d.name || '도착지';
+
+    if (typeof o.lat === 'number' && typeof d.lat === 'number') {
+      const totalKm = Math.max(1, haversineKm(o.lat, o.lon, d.lat, d.lon));
+      const flownKm = haversineKm(o.lat, o.lon, f.lat, f.lon);
+      const remainKm = Math.round(haversineKm(f.lat, f.lon, d.lat, d.lon));
+      const pct = Math.max(2, Math.min(98, Math.round((flownKm / (flownKm + remainKm || totalKm)) * 100)));
+      const etaMin = f.speedKmh > 120 ? Math.round((remainKm / f.speedKmh) * 60) : 0;
+      document.getElementById('detail-route-progress').style.width = `${pct}%`;
+      document.getElementById('detail-route-eta').textContent = etaMin > 0
+        ? `잔여 ${formatNumber(remainKm)} km · 약 ${formatDurationKorean(etaMin)}`
+        : `총 ${formatNumber(Math.round(totalKm))} km`;
+    } else {
+      document.getElementById('detail-route-progress').style.width = '50%';
+      document.getElementById('detail-route-eta').textContent = '실시간 운항 중';
+    }
+    routeCardEl.classList.remove('hidden');
+  } else {
+    routeCardEl.classList.add('hidden');
+  }
+
+  // Source & Signal Age
   document.getElementById('detail-source').textContent = f.source === 'adsblol'
     ? 'adsb.lol Live ADS-B'
-    : (f.source === 'adsbfi' ? 'adsb.fi Open Data' : 'OpenSky Network');
+    : (f.source === 'adsbfi' ? 'adsb.fi Open Data' : (f.source === 'flyitaly' ? 'FlyItalyADSB' : 'OpenSky Network'));
   document.getElementById('detail-contact-age').textContent = formatAge(f.lastContact);
 
+  // Core Telemetry Grid
+  const altSub = f.altGeomFt && Math.abs(f.altGeomFt - f.altitudeFt) > 150
+    ? `${formatNumber(f.altitudeM)} m · GPS ${formatNumber(f.altGeomFt)} ft`
+    : `${formatNumber(f.altitudeM)} m`;
   document.getElementById('detail-alt-ft').textContent = `${formatNumber(f.altitudeFt)} ft`;
-  document.getElementById('detail-alt-m').textContent = `${formatNumber(f.altitudeM)} m`;
-  document.getElementById('detail-speed-kts').textContent = `${f.speedKts} kts`;
-  document.getElementById('detail-speed-kmh').textContent = `${f.speedKmh} km/h`;
-  document.getElementById('detail-heading').textContent = `${Math.round(f.heading)}°`;
+  document.getElementById('detail-alt-m').textContent = altSub;
 
+  document.getElementById('detail-speed-kts').textContent = `${f.speedKts} kts`;
+  document.getElementById('detail-speed-kmh').textContent = f.mach
+    ? `${f.speedKmh} km/h · M ${f.mach.toFixed(2)}`
+    : `${f.speedKmh} km/h`;
+
+  document.getElementById('detail-heading').textContent = `${Math.round(f.heading)}° ${compassDir(f.heading)}`;
   const vrate = f.verticalRateFpm || 0;
   const vSign = vrate > 30 ? '▲ +' : vrate < -30 ? '▼ ' : '● ';
   document.getElementById('detail-vrate').textContent = `${vSign}${vrate} fpm`;
 
   document.getElementById('detail-coords').textContent = `${f.lat.toFixed(3)}°, ${f.lon.toFixed(3)}°`;
-  document.getElementById('detail-squawk').textContent = `SQK ${f.squawk || '----'}`;
-  document.getElementById('detail-aircraft-label').textContent = f.aircraftLabel || 'Live Transponder';
+  document.getElementById('detail-squawk').textContent = formatSquawkText(f.squawk, f.emergency);
+
+  // Extended Aircraft Specs, Avionics & Weather
+  const enrichStatusEl = document.getElementById('detail-enrich-status');
+  if (state.enrichmentPending.has(f.icao24)) {
+    enrichStatusEl.textContent = '조회 중...';
+  } else if (enriched?.ok) {
+    enrichStatusEl.textContent = 'DB 연동 완료';
+  } else {
+    enrichStatusEl.textContent = 'ADS-B 실시간';
+  }
+
+  const fullModelStr = [acInfo?.manufacturer, acInfo?.type].filter(Boolean).join(' ')
+    || (f.aircraftLabel && f.aircraftLabel !== 'Live Transponder' ? f.aircraftLabel : '정보 없음');
+  document.getElementById('spec-model').textContent = fullModelStr;
+  document.getElementById('spec-owner').textContent = acInfo?.owner || routeInfo?.airline?.name || f.originCountry || '정보 없음';
+
+  const catLabel = f.category ? (CATEGORY_LABELS[f.category] || f.category) : null;
+  const yearLabel = f.year ? `${f.year}년 제작` : null;
+  document.getElementById('spec-category').textContent = [catLabel, yearLabel].filter(Boolean).join(' · ') || '정보 없음';
+
+  const airspeedParts = [];
+  if (f.mach) airspeedParts.push(`Mach ${f.mach.toFixed(2)}`);
+  if (f.ias) airspeedParts.push(`IAS ${f.ias}kt`);
+  if (f.tas) airspeedParts.push(`TAS ${f.tas}kt`);
+  document.getElementById('spec-airspeed').textContent = airspeedParts.join(' · ') || '미수신';
+
+  const navParts = [];
+  if (f.navAltFt) navParts.push(`MCP ${formatNumber(f.navAltFt)} ft`);
+  if (f.navQnh) navParts.push(`QNH ${f.navQnh} hPa`);
+  document.getElementById('spec-nav').textContent = navParts.join(' · ') || '미수신';
+
+  const weatherParts = [];
+  if (f.windDir !== null && f.windDir !== undefined && f.windSpeedKts !== null && f.windSpeedKts !== undefined) {
+    weatherParts.push(`${f.windDir}° / ${f.windSpeedKts} kts`);
+  }
+  if (f.oat !== null && f.oat !== undefined) weatherParts.push(`${f.oat}°C`);
+  document.getElementById('spec-weather').textContent = weatherParts.join(' · ') || '미수신';
+
+  const sigParts = [f.positionSource || 'ADS-B'];
+  if (f.rssi !== null && f.rssi !== undefined) sigParts.push(`${f.rssi} dBFS`);
+  if (f.messages) sigParts.push(`${formatNumber(f.messages)} pkt`);
+  document.getElementById('spec-signal').textContent = sigParts.join(' · ');
+
+  // Footer & Chart
+  document.getElementById('detail-aircraft-label').textContent = fullModelStr !== '정보 없음' ? fullModelStr : (f.aircraftLabel || 'Live Transponder');
   document.getElementById('detail-icao').textContent = f.icao24.toUpperCase();
-  document.getElementById('detail-reg').textContent = f.registration || '---';
-  document.getElementById('detail-country').textContent = f.originCountry || '---';
+  document.getElementById('detail-reg').textContent = regDisplay;
+  document.getElementById('detail-country').textContent = countryDisplay;
 
   followBtn.classList.toggle('active', state.followSelected);
   followBtn.textContent = state.followSelected ? '추적 해제' : '카메라 추적';
@@ -608,7 +890,10 @@ function updateClock() {
 
 function animate(now) {
   const elapsedSec = (now - state.lastSyncMs) / 1000;
-  const smoothFlights = state.flights.map((f) => extrapolateLiveFlight(f, elapsedSec));
+  const smoothFlights = state.flights.map((f) => {
+    const moved = extrapolateLiveFlight(f, elapsedSec);
+    return moved.icao24 === state.selectedIcao ? applyEnrichmentToFlight(moved) : moved;
+  });
   globe.setFlights(smoothFlights);
   globe.render(now);
   requestAnimationFrame(animate);

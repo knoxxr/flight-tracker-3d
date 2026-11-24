@@ -519,6 +519,123 @@ body {
   color: var(--accent-sky);
 }
 
+.phase-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(74, 222, 128, 0.14);
+  color: var(--accent-emerald);
+  white-space: nowrap;
+}
+
+.phase-tag.climbing {
+  background: rgba(56, 189, 248, 0.16);
+  color: var(--accent-sky);
+}
+
+.phase-tag.descending {
+  background: rgba(251, 191, 36, 0.16);
+  color: var(--accent-amber);
+}
+
+.phase-tag.emergency {
+  background: rgba(248, 113, 113, 0.22);
+  color: var(--accent-danger);
+}
+
+.aircraft-photo-card {
+  margin: 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: rgba(4, 11, 21, 0.72);
+}
+
+.aircraft-photo-card img {
+  display: block;
+  width: 100%;
+  height: 132px;
+  object-fit: cover;
+  background: #06101f;
+}
+
+.photo-caption {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.photo-credit {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.extra-specs-card {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(4, 11, 21, 0.52);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.extra-specs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.specs-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.spec-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11.5px;
+  border-top: 1px solid rgba(148, 184, 218, 0.08);
+  padding-top: 5px;
+}
+
+.spec-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.spec-item dt {
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.spec-item dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-primary);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .route-banner {
   display: grid;
   grid-template-columns: auto 1fr auto;

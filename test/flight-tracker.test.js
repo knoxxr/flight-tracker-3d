@@ -5,6 +5,7 @@ import {
   parseAdsbFiAircraft,
   deadReckonFlight
 } from '../src/opensky.js';
+import { parseAdsbDbResponse } from '../src/enrichment.js';
 import { createAppServer } from '../src/server.js';
 
 test('parseOpenSkyStateVector normalizes valid 17-element OpenSky state vector', () => {
@@ -19,8 +20,10 @@ test('parseOpenSkyStateVector normalizes valid 17-element OpenSky state vector',
   assert.equal(parsed.callsign, 'KAL081');
   assert.equal(parsed.altitudeM, 10668);
   assert.ok(parsed.altitudeFt > 34900 && parsed.altitudeFt < 35100);
+  assert.ok(parsed.altGeomFt > 35700 && parsed.altGeomFt < 35800);
   assert.ok(parsed.speedKts > 470 && parsed.speedKts < 485);
   assert.equal(parsed.squawk, '2415');
+  assert.equal(parsed.positionSource, 'ADS-B');
   assert.equal(parsed.source, 'opensky');
 });
 
@@ -29,7 +32,7 @@ test('parseOpenSkyStateVector rejects entries missing coordinates', () => {
   assert.equal(parseOpenSkyStateVector([]), null);
 });
 
-test('parseAdsbFiAircraft normalizes adsb.fi v3 live aircraft object', () => {
+test('parseAdsbFiAircraft normalizes adsb.fi v3 live aircraft object and extended avionics', () => {
   const ac = {
     hex: '71bf01',
     flight: 'AAR201  ',
@@ -39,10 +42,24 @@ test('parseAdsbFiAircraft normalizes adsb.fi v3 live aircraft object', () => {
     lat: 37.51,
     lon: 126.82,
     alt_baro: 35000,
+    alt_geom: 35425,
     gs: 482,
     track: 85.4,
     baro_rate: 64,
     squawk: '2140',
+    type: 'adsb_icao',
+    category: 'A5',
+    mach: 0.842,
+    ias: 282,
+    tas: 478,
+    nav_altitude_mcp: 36000,
+    nav_qnh: 1013.2,
+    oat: -52,
+    wd: 275,
+    ws: 68,
+    year: '2019',
+    rssi: -14.6,
+    messages: 4120,
     seen: 2
   };
   const parsed = parseAdsbFiAircraft(ac, 1700000000);
@@ -53,7 +70,21 @@ test('parseAdsbFiAircraft normalizes adsb.fi v3 live aircraft object', () => {
   assert.equal(parsed.registration, 'HL8382');
   assert.equal(parsed.aircraftType, 'A359');
   assert.equal(parsed.altitudeFt, 35000);
+  assert.equal(parsed.altGeomFt, 35425);
   assert.equal(parsed.speedKts, 482);
+  assert.equal(parsed.positionSource, 'ADSB');
+  assert.equal(parsed.category, 'A5');
+  assert.equal(parsed.mach, 0.842);
+  assert.equal(parsed.ias, 282);
+  assert.equal(parsed.tas, 478);
+  assert.equal(parsed.navAltFt, 36000);
+  assert.equal(parsed.navQnh, 1013.2);
+  assert.equal(parsed.oat, -52);
+  assert.equal(parsed.windDir, 275);
+  assert.equal(parsed.windSpeedKts, 68);
+  assert.equal(parsed.year, '2019');
+  assert.equal(parsed.rssi, -14.6);
+  assert.equal(parsed.messages, 4120);
   assert.equal(parsed.source, 'adsbfi');
   assert.equal(parsed.onGround, false);
 });
@@ -64,6 +95,63 @@ test('parseAdsbFiAircraft flags ground aircraft accurately', () => {
   assert.ok(parsed);
   assert.equal(parsed.onGround, true);
   assert.equal(parsed.altitudeFt, 0);
+});
+
+test('parseAdsbDbResponse extracts aircraft metadata and origin/destination flightroute', () => {
+  const raw = {
+    response: {
+      aircraft: {
+        type: '777-3B5ER',
+        icao_type: 'B77W',
+        manufacturer: 'Boeing',
+        registration: 'HL8008',
+        registered_owner: 'Korean Air',
+        registered_owner_country_name: 'Republic of Korea',
+        registered_owner_country_iso_name: 'KR',
+        url_photo: 'https://example.com/hl8008.jpg',
+        url_photo_thumbnail: 'https://example.com/hl8008_thumb.jpg'
+      },
+      flightroute: {
+        callsign_iata: 'KE081',
+        airline: { name: 'Korean Air', iata: 'KE', icao: 'KAL', country: 'South Korea' },
+        origin: {
+          iata_code: 'ICN',
+          icao_code: 'RKSI',
+          name: 'Incheon International Airport',
+          municipality: 'Seoul',
+          country_name: 'South Korea',
+          country_iso_name: 'KR',
+          latitude: 37.4691,
+          longitude: 126.4505
+        },
+        destination: {
+          iata_code: 'JFK',
+          icao_code: 'KJFK',
+          name: 'John F Kennedy International Airport',
+          municipality: 'New York',
+          country_name: 'United States',
+          country_iso_name: 'US',
+          latitude: 40.6398,
+          longitude: -73.7789
+        }
+      }
+    }
+  };
+
+  const parsed = parseAdsbDbResponse(raw);
+  assert.ok(parsed);
+  assert.equal(parsed.aircraft.manufacturer, 'Boeing');
+  assert.equal(parsed.aircraft.type, '777-3B5ER');
+  assert.equal(parsed.aircraft.icaoType, 'B77W');
+  assert.equal(parsed.aircraft.registration, 'HL8008');
+  assert.equal(parsed.aircraft.owner, 'Korean Air');
+  assert.equal(parsed.aircraft.photoUrl, 'https://example.com/hl8008.jpg');
+  assert.equal(parsed.flightroute.callsignIata, 'KE081');
+  assert.equal(parsed.flightroute.airline.name, 'Korean Air');
+  assert.equal(parsed.flightroute.origin.iata, 'ICN');
+  assert.equal(parsed.flightroute.origin.lat, 37.4691);
+  assert.equal(parsed.flightroute.destination.iata, 'JFK');
+  assert.equal(parsed.flightroute.destination.lon, -73.7789);
 });
 
 test('deadReckonFlight advances airborne aircraft position along true track', () => {
@@ -82,7 +170,7 @@ test('deadReckonFlight advances airborne aircraft position along true track', ()
   assert.ok(Math.abs(next.lat - base.lat) < 0.05);
 });
 
-test('HTTP server serves live-only flights, detail, search, airports, and never fabricates simulated data on feed outage', async () => {
+test('HTTP server serves live-only flights, detail, enrichment, search, airports, and never fabricates simulated data on feed outage', async () => {
   const mockLiveFlights = [
     {
       icao24: '71be20',
@@ -127,7 +215,24 @@ test('HTTP server serves live-only flights, detail, search, airports, and never 
     }
   };
 
-  const server = createAppServer({ adsbClient: mockAdsbClient });
+  const mockEnrichmentService = {
+    async lookup(icao24, callsign) {
+      return {
+        ok: true,
+        icao24,
+        callsign,
+        aircraft: { manufacturer: 'Boeing', type: '777-3B5ER', icaoType: 'B77W', owner: 'Korean Air' },
+        flightroute: {
+          callsignIata: 'KE081',
+          origin: { iata: 'ICN', city: 'Seoul', lat: 37.4691, lon: 126.4505 },
+          destination: { iata: 'JFK', city: 'New York', lat: 40.6398, lon: -73.7789 }
+        },
+        photo: { url: 'https://example.com/hl8008.jpg', credit: 'Planespotters.net' }
+      };
+    }
+  };
+
+  const server = createAppServer({ adsbClient: mockAdsbClient, enrichmentService: mockEnrichmentService });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -157,6 +262,15 @@ test('HTTP server serves live-only flights, detail, search, airports, and never 
     const detailData = await detailRes.json();
     assert.equal(detailData.flight.icao24, '71be20');
     assert.ok(Array.isArray(detailData.track));
+
+    const enrichRes = await fetch(`${baseUrl}/api/enrich/71be20?callsign=KAL081`);
+    assert.equal(enrichRes.status, 200);
+    const enrichData = await enrichRes.json();
+    assert.equal(enrichData.ok, true);
+    assert.equal(enrichData.aircraft.manufacturer, 'Boeing');
+    assert.equal(enrichData.flightroute.origin.iata, 'ICN');
+    assert.equal(enrichData.flightroute.destination.iata, 'JFK');
+    assert.equal(enrichData.photo.url, 'https://example.com/hl8008.jpg');
 
     // When live feed fails, server MUST return 0 flights (zero simulated fallback)
     failFeed = true;

@@ -159,6 +159,11 @@ export function parseOpenSkyStateVector(vec, nowSec = Math.floor(Date.now() / 10
   const speedKmh = Math.round(velocityMs * 3.6);
   const verticalRateFpm = Math.round(verticalRateMs * 196.85);
 
+  const geomAltM = typeof vec[13] === 'number' ? Math.max(0, Math.round(vec[13])) : null;
+  const altGeomFt = geomAltM !== null ? Math.round(geomAltM * 3.28084) : null;
+  const posSourceMap = { 0: 'ADS-B', 1: 'ASTERIX', 2: 'MLAT', 3: 'FLARM' };
+  const positionSource = typeof vec[16] === 'number' ? (posSourceMap[vec[16]] || 'ADS-B') : 'ADS-B';
+
   return {
     icao24,
     callsign,
@@ -171,6 +176,7 @@ export function parseOpenSkyStateVector(vec, nowSec = Math.floor(Date.now() / 10
     lon: Number(lon.toFixed(4)),
     altitudeM,
     altitudeFt,
+    altGeomFt,
     speedMs: Number(velocityMs.toFixed(1)),
     speedKts,
     speedKmh,
@@ -178,6 +184,20 @@ export function parseOpenSkyStateVector(vec, nowSec = Math.floor(Date.now() / 10
     verticalRateMs: Number(verticalRateMs.toFixed(2)),
     verticalRateFpm,
     onGround,
+    positionSource,
+    category: null,
+    mach: null,
+    ias: null,
+    tas: null,
+    navAltFt: null,
+    navQnh: null,
+    oat: null,
+    windDir: null,
+    windSpeedKts: null,
+    emergency: null,
+    year: null,
+    rssi: null,
+    messages: null,
     source: 'opensky',
     lastContact
   };
@@ -199,6 +219,7 @@ export function parseAdsbFiAircraft(ac, nowSec = Math.floor(Date.now() / 1000), 
     : (typeof ac.alt_geom === 'number' ? ac.alt_geom : 0);
   const altitudeFt = Math.max(0, Math.round(altFtRaw));
   const altitudeM = Math.round(altitudeFt * 0.3048);
+  const altGeomFt = typeof ac.alt_geom === 'number' ? Math.max(0, Math.round(ac.alt_geom)) : null;
 
   const speedMs = Number((speedKts * 0.514444).toFixed(1));
   const speedKmh = Math.round(speedKts * 1.852);
@@ -215,6 +236,10 @@ export function parseAdsbFiAircraft(ac, nowSec = Math.floor(Date.now() / 1000), 
     ? Math.round(ac.seen_pos)
     : (typeof ac.seen === 'number' ? Math.round(ac.seen) : 0);
 
+  const navAltFt = typeof ac.nav_altitude_mcp === 'number'
+    ? Math.round(ac.nav_altitude_mcp)
+    : (typeof ac.nav_altitude_fms === 'number' ? Math.round(ac.nav_altitude_fms) : null);
+
   return {
     icao24,
     callsign,
@@ -227,6 +252,7 @@ export function parseAdsbFiAircraft(ac, nowSec = Math.floor(Date.now() / 1000), 
     lon: Number(ac.lon.toFixed(4)),
     altitudeM,
     altitudeFt,
+    altGeomFt,
     speedMs,
     speedKts,
     speedKmh,
@@ -234,6 +260,20 @@ export function parseAdsbFiAircraft(ac, nowSec = Math.floor(Date.now() / 1000), 
     verticalRateMs,
     verticalRateFpm,
     onGround,
+    positionSource: ac.type ? String(ac.type).toUpperCase().replace('_ICAO', '') : 'ADS-B',
+    category: ac.category ? String(ac.category).trim() : null,
+    mach: typeof ac.mach === 'number' ? Number(ac.mach.toFixed(3)) : null,
+    ias: typeof ac.ias === 'number' ? Math.round(ac.ias) : null,
+    tas: typeof ac.tas === 'number' ? Math.round(ac.tas) : null,
+    navAltFt,
+    navQnh: typeof ac.nav_qnh === 'number' ? Number(ac.nav_qnh.toFixed(1)) : null,
+    oat: typeof ac.oat === 'number' ? Math.round(ac.oat) : (typeof ac.tat === 'number' ? Math.round(ac.tat) : null),
+    windDir: typeof ac.wd === 'number' ? Math.round(ac.wd) : null,
+    windSpeedKts: typeof ac.ws === 'number' ? Math.round(ac.ws) : null,
+    emergency: ac.emergency && ac.emergency !== 'none' ? String(ac.emergency) : null,
+    year: ac.year ? String(ac.year).trim() : null,
+    rssi: typeof ac.rssi === 'number' ? Number(ac.rssi.toFixed(1)) : null,
+    messages: typeof ac.messages === 'number' ? ac.messages : null,
     source,
     lastContact: Math.max(0, nowSec - seenSec)
   };

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AIRPORTS } from './airports.js';
 import { LiveAdsbClient } from './opensky.js';
+import { AircraftEnrichmentService } from './enrichment.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,6 +67,7 @@ function filterFlights(flights, searchQuery) {
 
 export function createAppServer(options = {}) {
   const adsbClient = options.adsbClient || new LiveAdsbClient();
+  const enrichmentService = options.enrichmentService || new AircraftEnrichmentService();
   const trackHistory = new Map();
 
   function recordTracks(flights) {
@@ -169,6 +171,13 @@ export function createAppServer(options = {}) {
           flight,
           track: trackHistory.get(icao24) || []
         });
+      }
+
+      if (pathname.startsWith('/api/enrich/')) {
+        const icao24 = decodeURIComponent(pathname.slice('/api/enrich/'.length)).toLowerCase();
+        const callsign = reqUrl.searchParams.get('callsign') || '';
+        const info = await enrichmentService.lookup(icao24, callsign);
+        return sendJson(res, 200, info);
       }
 
       if (pathname === '/api/stream') {

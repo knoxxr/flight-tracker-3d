@@ -129,10 +129,38 @@
             <div class="detail-callsign-row">
               <h2 class="detail-callsign" id="detail-callsign">---</h2>
               <span class="detail-type-tag" id="detail-aircraft-type">ADS-B</span>
+              <span class="phase-tag" id="detail-phase">순항</span>
             </div>
             <p class="panel-subtitle" id="detail-airline">---</p>
           </div>
           <button type="button" class="icon-close-btn" id="close-detail-btn" aria-label="닫기">×</button>
+        </div>
+
+        <!-- Real Aircraft Photo (shown when available from adsbdb / Planespotters.net) -->
+        <figure class="aircraft-photo-card hidden" id="detail-photo-card">
+          <img id="detail-photo-img" alt="선택한 항공기 실제 사진" loading="lazy" />
+          <figcaption class="photo-caption">
+            <span id="detail-photo-model">---</span>
+            <span id="detail-photo-credit" class="photo-credit">---</span>
+          </figcaption>
+        </figure>
+
+        <!-- Real Origin -> Destination Route Card (shown when resolved via adsbdb) -->
+        <div class="route-banner hidden" id="detail-route-card">
+          <div class="route-endpoint">
+            <span class="route-iata" id="detail-origin-iata">---</span>
+            <span class="route-name" id="detail-origin-city">출발지</span>
+          </div>
+          <div class="route-line-wrap">
+            <div class="route-progress-track">
+              <div class="route-progress-fill" id="detail-route-progress" style="width:0%"></div>
+            </div>
+            <span class="route-meta" id="detail-route-eta">---</span>
+          </div>
+          <div class="route-endpoint right">
+            <span class="route-iata" id="detail-dest-iata">---</span>
+            <span class="route-name" id="detail-dest-city">도착지</span>
+          </div>
         </div>
 
         <!-- Live Transponder Status Banner -->
@@ -147,7 +175,7 @@
           </div>
         </div>
 
-        <!-- Telemetry Grid -->
+        <!-- Core Telemetry Grid -->
         <div class="telemetry-grid">
           <div class="telemetry-cell">
             <span class="tele-label">고도 (ALTITUDE)</span>
@@ -169,6 +197,23 @@
             <strong class="tele-value mono-sm" id="detail-coords">---</strong>
             <span class="tele-sub" id="detail-squawk">SQK ----</span>
           </div>
+        </div>
+
+        <!-- Extended Aircraft Specs, Avionics & Upper-Air Weather -->
+        <div class="extra-specs-card" id="detail-extra-card">
+          <div class="extra-specs-header">
+            <span>기체 상세 · 항전 · 상공 기상</span>
+            <span id="detail-enrich-status" class="muted">---</span>
+          </div>
+          <dl class="specs-list" id="detail-specs-list">
+            <div class="spec-item"><dt>제조사 · 기종</dt><dd id="spec-model">---</dd></div>
+            <div class="spec-item"><dt>운항 · 소유사</dt><dd id="spec-owner">---</dd></div>
+            <div class="spec-item"><dt>기체 등급 · 기령</dt><dd id="spec-category">---</dd></div>
+            <div class="spec-item"><dt>마하 · 대기속도</dt><dd id="spec-airspeed">---</dd></div>
+            <div class="spec-item"><dt>목표고도 · QNH</dt><dd id="spec-nav">---</dd></div>
+            <div class="spec-item"><dt>상공 바람 · 외기온</dt><dd id="spec-weather">---</dd></div>
+            <div class="spec-item"><dt>수신방식 · 신호</dt><dd id="spec-signal">---</dd></div>
+          </dl>
         </div>
 
         <!-- Live Altitude History Mini Chart -->
