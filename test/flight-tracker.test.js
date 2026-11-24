@@ -7,8 +7,21 @@ import {
 } from '../src/opensky.js';
 import { parseAdsbDbResponse, parseHexDbRoute } from '../src/enrichment.js';
 import { OceanicEstimator, advanceAlongGreatCircle } from '../src/oceanic-estimator.js';
-import { resolveAircraftCountry, decodeCallsign } from '../public/aviation-meta.js';
+import { resolveAircraftCountry, decodeCallsign, classifyAircraftIcon } from '../public/aviation-meta.js';
 import { createAppServer } from '../src/server.js';
+
+test('classifyAircraftIcon distinguishes aircraft by size and purpose', () => {
+  assert.equal(classifyAircraftIcon({ aircraftType: 'A388', callsign: 'UAE322' }).kind, 'super_heavy');
+  assert.equal(classifyAircraftIcon({ aircraftType: 'B77W', callsign: 'KAL081' }).kind, 'heavy');
+  assert.equal(classifyAircraftIcon({ aircraftType: 'B77L', callsign: 'FDX501' }).kind, 'cargo');
+  assert.equal(classifyAircraftIcon({ aircraftType: 'A321', callsign: 'AAR102' }).kind, 'narrowbody');
+  assert.equal(classifyAircraftIcon({ aircraftType: 'GLEX', callsign: 'N650GA' }).kind, 'bizjet');
+  assert.equal(classifyAircraftIcon({ aircraftType: 'C172', callsign: 'HL1234' }).kind, 'prop');
+  assert.equal(classifyAircraftIcon({ aircraftType: 'H135', category: 'A7' }).kind, 'helicopter');
+  assert.equal(classifyAircraftIcon({ aircraftType: 'F16', isMilitary: true }).kind, 'military_fighter');
+  assert.equal(classifyAircraftIcon({ aircraftType: 'C17', callsign: 'RCH401' }).kind, 'military_heavy');
+  assert.equal(classifyAircraftIcon({ aircraftType: 'RQ4', category: 'B6' }).kind, 'uav');
+});
 
 test('resolveAircraftCountry decodes ICAO24 hex & registration into Korean country + flag', () => {
   const kr = resolveAircraftCountry('71bf01', 'HL7701', '');

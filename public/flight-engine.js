@@ -178,6 +178,7 @@ function parseAdsbFiItem(ac, nowSec) {
     windDir: typeof ac.wd === 'number' ? Math.round(ac.wd) : null,
     windSpeedKts: typeof ac.ws === 'number' ? Math.round(ac.ws) : null,
     emergency: ac.emergency && ac.emergency !== 'none' ? String(ac.emergency) : null,
+    isMilitary: Boolean((ac.dbFlags || 0) & 1),
     year: ac.year ? String(ac.year).trim() : null,
     rssi: typeof ac.rssi === 'number' ? Number(ac.rssi.toFixed(1)) : null,
     messages: typeof ac.messages === 'number' ? ac.messages : null,

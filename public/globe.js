@@ -1,5 +1,6 @@
 import { WORLD_POLYGONS, CITY_LIGHTS } from './world-data.js';
 import { PLACE_LABELS } from './places-data.js';
+import { classifyAircraftIcon } from './aviation-meta.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -1380,48 +1381,41 @@ export class Globe3D {
         ctx.restore();
       }
 
-      // Crisp oriented airplane silhouette (with fast 4-vertex jet dart LOD when >1,500 visible & zoomed out)
-      const useFastLod = projected.length > 1500 && this.zoom < 1.85 && !isSelected && !isHovered;
-      const s = isSelected ? baseSize * 1.42 : isHovered ? baseSize * 1.25 : baseSize;
+      // Size- & purpose-specific aircraft icon silhouette
+      const iconMeta = flight._iconMeta || (flight._iconMeta = classifyAircraftIcon(flight));
+      const useFastLod = projected.length > 1600 && this.zoom < 1.65 && !isSelected && !isHovered;
+      const roleScale = iconMeta.scale || 1.0;
+      const s = (isSelected ? baseSize * 1.38 : isHovered ? baseSize * 1.22 : baseSize) * roleScale;
+
       ctx.save();
       ctx.translate(x, y);
-      ctx.rotate(angle);
+      if (iconMeta.kind !== 'balloon') {
+        ctx.rotate(angle);
+      }
       ctx.globalAlpha = isSelected || isHovered ? 1 : (isEstimated ? depthAlpha * 0.78 : depthAlpha);
       ctx.fillStyle = isSelected ? (isEstimated ? '#e9d5ff' : '#fef08a') : color;
 
-      ctx.beginPath();
       if (useFastLod) {
-        ctx.moveTo(s * 1.15, 0);
-        ctx.lineTo(-s * 0.72, s * 0.78);
-        ctx.lineTo(-s * 0.35, 0);
-        ctx.lineTo(-s * 0.72, -s * 0.78);
+        ctx.beginPath();
+        if (iconMeta.kind === 'helicopter') {
+          ctx.arc(0, 0, s * 0.65, 0, Math.PI * 2);
+        } else if (iconMeta.kind === 'prop') {
+          ctx.moveTo(s * 0.9, 0);
+          ctx.lineTo(s * 0.1, s * 0.95);
+          ctx.lineTo(-s * 0.85, 0);
+          ctx.lineTo(s * 0.1, -s * 0.95);
+        } else {
+          ctx.moveTo(s * 1.15, 0);
+          ctx.lineTo(-s * 0.72, s * 0.78);
+          ctx.lineTo(-s * 0.35, 0);
+          ctx.lineTo(-s * 0.72, -s * 0.78);
+        }
+        ctx.closePath();
+        ctx.fill();
       } else {
-        // Fuselage nose -> right wing -> tail -> left wing
-        ctx.moveTo(s * 1.15, 0);
-        ctx.lineTo(s * 0.25, s * 0.22);
-        ctx.lineTo(-s * 0.18, s * 1.05);
-        ctx.lineTo(-s * 0.45, s * 0.95);
-        ctx.lineTo(-s * 0.22, s * 0.2);
-        ctx.lineTo(-s * 0.78, s * 0.14);
-        ctx.lineTo(-s * 1.02, s * 0.46);
-        ctx.lineTo(-s * 1.15, s * 0.42);
-        ctx.lineTo(-s * 0.98, 0);
-        ctx.lineTo(-s * 1.15, -s * 0.42);
-        ctx.lineTo(-s * 1.02, -s * 0.46);
-        ctx.lineTo(-s * 0.78, -s * 0.14);
-        ctx.lineTo(-s * 0.22, -s * 0.2);
-        ctx.lineTo(-s * 0.45, -s * 0.95);
-        ctx.lineTo(-s * 0.18, -s * 1.05);
-        ctx.lineTo(s * 0.25, -s * 0.22);
+        this._drawAircraftIcon(ctx, iconMeta.kind, s, isSelected, isEstimated, now);
       }
-      ctx.closePath();
-      ctx.fill();
 
-      if (isSelected) {
-        ctx.strokeStyle = isEstimated ? '#7e22ce' : '#92400e';
-        ctx.lineWidth = 0.8;
-        ctx.stroke();
-      }
       ctx.restore();
 
       // Callsign (+ altitude when zoomed deep in) label
@@ -1444,6 +1438,284 @@ export class Globe3D {
         ctx.fillText(label, x + s + 9, y + 0.5);
         ctx.restore();
       }
+    }
+  }
+
+  _drawAircraftIcon(ctx, kind, s, isSelected, isEstimated, now) {
+    if (kind === 'helicopter') {
+      // Teardrop fuselage + tail boom + horizontal tail fin
+      ctx.beginPath();
+      ctx.moveTo(s * 0.78, 0);
+      ctx.quadraticCurveTo(s * 0.52, s * 0.32, -s * 0.1, s * 0.24);
+      ctx.lineTo(-s * 0.92, s * 0.08);
+      ctx.lineTo(-s * 1.06, s * 0.34);
+      ctx.lineTo(-s * 1.16, s * 0.30);
+      ctx.lineTo(-s * 1.05, 0);
+      ctx.lineTo(-s * 1.16, -s * 0.30);
+      ctx.lineTo(-s * 1.06, -s * 0.34);
+      ctx.lineTo(-s * 0.92, -s * 0.08);
+      ctx.lineTo(-s * 0.1, -s * 0.24);
+      ctx.quadraticCurveTo(s * 0.52, -s * 0.32, s * 0.78, 0);
+      ctx.closePath();
+      ctx.fill();
+
+      // Spinning 4-blade main rotor centered on cabin
+      const spin = (now * 0.011) % (Math.PI * 2);
+      ctx.save();
+      ctx.translate(s * 0.18, 0);
+      ctx.rotate(spin);
+      ctx.strokeStyle = isSelected ? '#fef08a' : ctx.fillStyle;
+      ctx.lineWidth = Math.max(1.0, s * 0.14);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-s * 0.78, 0);
+      ctx.lineTo(s * 0.78, 0);
+      ctx.moveTo(0, -s * 0.78);
+      ctx.lineTo(0, s * 0.78);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+
+    if (kind === 'prop') {
+      // General aviation / Turboprop: straight unswept high-aspect wings + nose prop bar
+      ctx.beginPath();
+      ctx.moveTo(s * 0.98, 0);
+      ctx.lineTo(s * 0.72, s * 0.14);
+      ctx.lineTo(s * 0.28, s * 0.16);
+      ctx.lineTo(s * 0.22, s * 1.08);
+      ctx.lineTo(-s * 0.08, s * 1.08);
+      ctx.lineTo(-s * 0.12, s * 0.15);
+      ctx.lineTo(-s * 0.78, s * 0.10);
+      ctx.lineTo(-s * 0.86, s * 0.42);
+      ctx.lineTo(-s * 1.02, s * 0.40);
+      ctx.lineTo(-s * 0.96, 0);
+      ctx.lineTo(-s * 1.02, -s * 0.40);
+      ctx.lineTo(-s * 0.86, -s * 0.42);
+      ctx.lineTo(-s * 0.78, -s * 0.10);
+      ctx.lineTo(-s * 0.12, -s * 0.15);
+      ctx.lineTo(-s * 0.08, -s * 1.08);
+      ctx.lineTo(s * 0.22, -s * 1.08);
+      ctx.lineTo(s * 0.28, -s * 0.16);
+      ctx.lineTo(s * 0.72, -s * 0.14);
+      ctx.closePath();
+      ctx.fill();
+
+      // Subtle front propeller disc bar
+      ctx.strokeStyle = isSelected ? '#fef08a' : ctx.fillStyle;
+      ctx.lineWidth = Math.max(0.9, s * 0.12);
+      ctx.beginPath();
+      ctx.moveTo(s * 1.05, -s * 0.26);
+      ctx.lineTo(s * 1.05, s * 0.26);
+      ctx.stroke();
+      return;
+    }
+
+    if (kind === 'bizjet') {
+      // Business Jet: slender needle nose, narrow swept wings, rear-mounted engines, T-tail
+      ctx.beginPath();
+      ctx.moveTo(s * 1.2, 0);
+      ctx.lineTo(s * 0.35, s * 0.13);
+      ctx.lineTo(-s * 0.15, s * 0.92);
+      ctx.lineTo(-s * 0.38, s * 0.84);
+      ctx.lineTo(-s * 0.18, s * 0.15);
+      ctx.lineTo(-s * 0.56, s * 0.24); // rear engine pod
+      ctx.lineTo(-s * 0.76, s * 0.20);
+      ctx.lineTo(-s * 0.78, s * 0.10);
+      ctx.lineTo(-s * 1.08, s * 0.44); // T-tail
+      ctx.lineTo(-s * 1.18, s * 0.38);
+      ctx.lineTo(-s * 1.02, 0);
+      ctx.lineTo(-s * 1.18, -s * 0.38);
+      ctx.lineTo(-s * 1.08, -s * 0.44);
+      ctx.lineTo(-s * 0.78, -s * 0.10);
+      ctx.lineTo(-s * 0.76, -s * 0.20);
+      ctx.lineTo(-s * 0.56, -s * 0.24);
+      ctx.lineTo(-s * 0.18, -s * 0.15);
+      ctx.lineTo(-s * 0.38, -s * 0.84);
+      ctx.lineTo(-s * 0.15, -s * 0.92);
+      ctx.lineTo(s * 0.35, -s * 0.13);
+      ctx.closePath();
+      ctx.fill();
+      return;
+    }
+
+    if (kind === 'military_fighter') {
+      // Sharp Delta-Wing Fighter Jet + tactical crimson edge accent
+      ctx.beginPath();
+      ctx.moveTo(s * 1.24, 0);
+      ctx.lineTo(s * 0.35, s * 0.18);
+      ctx.lineTo(-s * 0.42, s * 0.96);
+      ctx.lineTo(-s * 0.62, s * 0.88);
+      ctx.lineTo(-s * 0.54, s * 0.22);
+      ctx.lineTo(-s * 0.96, s * 0.48);
+      ctx.lineTo(-s * 1.12, s * 0.40);
+      ctx.lineTo(-s * 0.98, s * 0.14);
+      ctx.lineTo(-s * 1.06, 0);
+      ctx.lineTo(-s * 0.98, -s * 0.14);
+      ctx.lineTo(-s * 1.12, -s * 0.40);
+      ctx.lineTo(-s * 0.96, -s * 0.48);
+      ctx.lineTo(-s * 0.54, -s * 0.22);
+      ctx.lineTo(-s * 0.62, -s * 0.88);
+      ctx.lineTo(-s * 0.42, -s * 0.96);
+      ctx.lineTo(s * 0.35, -s * 0.18);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? '#fef08a' : '#f87171';
+      ctx.lineWidth = Math.max(0.85, s * 0.1);
+      ctx.stroke();
+      return;
+    }
+
+    if (kind === 'military_heavy') {
+      // Tactical Military Transport / Tanker (C-17 / C-130 / KC-135) with broad fuselage & T-tail
+      ctx.beginPath();
+      ctx.moveTo(s * 1.08, 0);
+      ctx.lineTo(s * 0.82, s * 0.21);
+      ctx.lineTo(s * 0.26, s * 0.23);
+      ctx.lineTo(-s * 0.08, s * 1.06);
+      ctx.lineTo(-s * 0.34, s * 1.02);
+      ctx.lineTo(-s * 0.20, s * 0.23);
+      ctx.lineTo(-s * 0.82, s * 0.18);
+      ctx.lineTo(-s * 1.06, s * 0.52);
+      ctx.lineTo(-s * 1.18, s * 0.46);
+      ctx.lineTo(-s * 1.02, 0);
+      ctx.lineTo(-s * 1.18, -s * 0.46);
+      ctx.lineTo(-s * 1.06, -s * 0.52);
+      ctx.lineTo(-s * 0.82, -s * 0.18);
+      ctx.lineTo(-s * 0.20, -s * 0.23);
+      ctx.lineTo(-s * 0.34, -s * 1.02);
+      ctx.lineTo(-s * 0.08, -s * 1.06);
+      ctx.lineTo(s * 0.26, -s * 0.23);
+      ctx.lineTo(s * 0.82, -s * 0.21);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? '#fef08a' : '#f87171';
+      ctx.lineWidth = Math.max(0.85, s * 0.09);
+      ctx.stroke();
+      return;
+    }
+
+    if (kind === 'uav') {
+      // High-aspect thin long-wing UAV / Drone
+      ctx.beginPath();
+      ctx.moveTo(s * 0.95, 0);
+      ctx.lineTo(s * 0.15, s * 0.10);
+      ctx.lineTo(s * 0.05, s * 1.28);
+      ctx.lineTo(-s * 0.12, s * 1.28);
+      ctx.lineTo(-s * 0.10, s * 0.10);
+      ctx.lineTo(-s * 0.88, s * 0.08);
+      ctx.lineTo(-s * 1.06, s * 0.34);
+      ctx.lineTo(-s * 0.96, 0);
+      ctx.lineTo(-s * 1.06, -s * 0.34);
+      ctx.lineTo(-s * 0.88, -s * 0.08);
+      ctx.lineTo(-s * 0.10, -s * 0.10);
+      ctx.lineTo(-s * 0.12, -s * 1.28);
+      ctx.lineTo(s * 0.05, -s * 1.28);
+      ctx.lineTo(s * 0.15, -s * 0.10);
+      ctx.closePath();
+      ctx.fill();
+      return;
+    }
+
+    if (kind === 'balloon') {
+      ctx.beginPath();
+      ctx.arc(0, 0, s * 0.62, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      return;
+    }
+
+    if (kind === 'super_heavy') {
+      // 4-Engine Super-Heavy Widebody (A380, B747, A340): wide fuselage + 4 visible wing engines
+      ctx.beginPath();
+      ctx.moveTo(s * 1.14, 0);
+      ctx.lineTo(s * 0.82, s * 0.21);
+      ctx.lineTo(s * 0.32, s * 0.23);
+      ctx.lineTo(-s * 0.18, s * 1.08);
+      ctx.lineTo(-s * 0.44, s * 1.02);
+      ctx.lineTo(-s * 0.24, s * 0.23);
+      ctx.lineTo(-s * 0.78, s * 0.18);
+      ctx.lineTo(-s * 1.04, s * 0.50);
+      ctx.lineTo(-s * 1.16, s * 0.44);
+      ctx.lineTo(-s * 0.98, 0);
+      ctx.lineTo(-s * 1.16, -s * 0.44);
+      ctx.lineTo(-s * 1.04, -s * 0.50);
+      ctx.lineTo(-s * 0.78, -s * 0.18);
+      ctx.lineTo(-s * 0.24, -s * 0.23);
+      ctx.lineTo(-s * 0.44, -s * 1.02);
+      ctx.lineTo(-s * 0.18, -s * 1.08);
+      ctx.lineTo(s * 0.32, -s * 0.23);
+      ctx.lineTo(s * 0.82, -s * 0.21);
+      ctx.closePath();
+      ctx.fill();
+
+      // 4 distinct engine nacelles (2 per wing)
+      ctx.fillRect(s * 0.04, s * 0.36, s * 0.24, s * 0.12);
+      ctx.fillRect(-s * 0.12, s * 0.66, s * 0.22, s * 0.11);
+      ctx.fillRect(s * 0.04, -s * 0.48, s * 0.24, s * 0.12);
+      ctx.fillRect(-s * 0.12, -s * 0.77, s * 0.22, s * 0.11);
+    } else if (kind === 'heavy' || kind === 'cargo') {
+      // Widebody Twin-Jet (B777, B787, A350, A330, Cargo Freighter)
+      ctx.beginPath();
+      ctx.moveTo(s * 1.16, 0);
+      ctx.lineTo(s * 0.82, s * 0.18);
+      ctx.lineTo(s * 0.30, s * 0.20);
+      ctx.lineTo(-s * 0.16, s * 1.06);
+      ctx.lineTo(-s * 0.42, s * 0.98);
+      ctx.lineTo(-s * 0.20, s * 0.20);
+      ctx.lineTo(-s * 0.78, s * 0.15);
+      ctx.lineTo(-s * 1.02, s * 0.46);
+      ctx.lineTo(-s * 1.15, s * 0.42);
+      ctx.lineTo(-s * 0.98, 0);
+      ctx.lineTo(-s * 1.15, -s * 0.42);
+      ctx.lineTo(-s * 1.02, -s * 0.46);
+      ctx.lineTo(-s * 0.78, -s * 0.15);
+      ctx.lineTo(-s * 0.20, -s * 0.20);
+      ctx.lineTo(-s * 0.42, -s * 0.98);
+      ctx.lineTo(-s * 0.16, -s * 1.06);
+      ctx.lineTo(s * 0.30, -s * 0.20);
+      ctx.lineTo(s * 0.82, -s * 0.18);
+      ctx.closePath();
+      ctx.fill();
+
+      // 2 prominent widebody engine nacelles
+      ctx.fillRect(s * 0.04, s * 0.34, s * 0.25, s * 0.12);
+      ctx.fillRect(s * 0.04, -s * 0.46, s * 0.25, s * 0.12);
+
+      // Cargo freighter amber-orange fuselage spine accent
+      if (kind === 'cargo') {
+        ctx.fillStyle = isSelected ? '#92400e' : '#fb923c';
+        ctx.fillRect(-s * 0.45, -s * 0.10, s * 0.95, s * 0.20);
+      }
+    } else {
+      // Classic Narrowbody Airliner (A320, B737, E190)
+      ctx.beginPath();
+      ctx.moveTo(s * 1.15, 0);
+      ctx.lineTo(s * 0.25, s * 0.19);
+      ctx.lineTo(-s * 0.18, s * 1.02);
+      ctx.lineTo(-s * 0.44, s * 0.92);
+      ctx.lineTo(-s * 0.22, s * 0.18);
+      ctx.lineTo(-s * 0.78, s * 0.13);
+      ctx.lineTo(-s * 1.02, s * 0.44);
+      ctx.lineTo(-s * 1.15, s * 0.40);
+      ctx.lineTo(-s * 0.98, 0);
+      ctx.lineTo(-s * 1.15, -s * 0.40);
+      ctx.lineTo(-s * 1.02, -s * 0.44);
+      ctx.lineTo(-s * 0.78, -s * 0.13);
+      ctx.lineTo(-s * 0.22, -s * 0.18);
+      ctx.lineTo(-s * 0.44, -s * 0.92);
+      ctx.lineTo(-s * 0.18, -s * 1.02);
+      ctx.lineTo(s * 0.25, -s * 0.19);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    if (isSelected) {
+      ctx.strokeStyle = isEstimated ? '#7e22ce' : '#92400e';
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
     }
   }
 }

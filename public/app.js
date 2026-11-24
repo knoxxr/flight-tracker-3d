@@ -1,6 +1,6 @@
 import { Globe3D } from './globe.js';
 import { LiveBrowserAdsbClient, STATIC_AIRPORTS } from './flight-engine.js';
-import { resolveAircraftCountry, decodeCallsign } from './aviation-meta.js';
+import { resolveAircraftCountry, decodeCallsign, classifyAircraftIcon } from './aviation-meta.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -80,6 +80,7 @@ const globe = new Globe3D(canvas, {
     }
     const country = resolveAircraftCountry(flight.icao24, flight.registration, flight.originCountry);
     const csInfo = decodeCallsign(flight.callsign);
+    const iconMeta = classifyAircraftIcon(flight);
     const enriched = state.enrichmentCache.get(flight.icao24);
     const iataCode = enriched?.flightroute?.callsignIata || flight.iataFlight || csInfo?.iataFlight;
     const titleStr = iataCode && iataCode !== flight.callsign
@@ -91,13 +92,15 @@ const globe = new Globe3D(canvas, {
       : (flight.origin && flight.destination
         ? `${flight.origin} → ${flight.destination}`
         : (flight.airlineName || csInfo?.airlineKo || country.nameKo));
-    const typeMeta = flight.aircraftType && flight.aircraftType !== 'ADS-B' ? ` · ${flight.aircraftType}` : '';
+    const typeMeta = flight.aircraftType && flight.aircraftType !== 'ADS-B'
+      ? ` · ${flight.aircraftType} (${iconMeta.labelKo})`
+      : ` · ${iconMeta.labelKo}`;
     const estBadge = flight.estimated ? '<span class="est-pill">공해상 추정</span>' : '';
     tooltipEl.innerHTML = `
       <div><span class="tooltip-callsign">${escapeHtml(titleStr)}</span><span>${escapeHtml(typeMeta)}</span>${estBadge}</div>
       <div class="tooltip-meta">${escapeHtml(routeStr)} · ${formatNumber(flight.altitudeFt)} ft · ${flight.speedKts} kts</div>
     `;
-    tooltipEl.style.left = `${Math.min(window.innerWidth - 260, pos.x + 14)}px`;
+    tooltipEl.style.left = `${Math.min(window.innerWidth - 280, pos.x + 14)}px`;
     tooltipEl.style.top = `${Math.max(12, pos.y - 44)}px`;
     tooltipEl.classList.remove('hidden');
   }
@@ -688,9 +691,10 @@ function renderFlightDetail() {
   document.getElementById('spec-model').textContent = fullModelStr;
   document.getElementById('spec-owner').textContent = acInfo?.owner || routeInfo?.airline?.name || csInfo?.airlineKo || f.airlineName || '정보 없음';
 
+  const iconMeta = classifyAircraftIcon(f);
   const catLabel = f.category ? (CATEGORY_LABELS[f.category] || f.category) : null;
   const yearLabel = f.year ? `${f.year}년 제작` : null;
-  document.getElementById('spec-category').textContent = [catLabel, yearLabel].filter(Boolean).join(' · ') || '정보 없음';
+  document.getElementById('spec-category').textContent = [iconMeta.labelKo, catLabel, yearLabel].filter(Boolean).join(' · ') || '정보 없음';
 
   const airspeedParts = [];
   if (f.mach) airspeedParts.push(`Mach ${f.mach.toFixed(2)}`);

@@ -357,3 +357,165 @@ export function decodeCallsign(callsign) {
     airlineFlag: info.flag
   };
 }
+
+// ======================== AIRCRAFT SIZE & PURPOSE ICON CLASSIFIER ========================
+
+const SUPER_HEAVY_TYPES = new Set([
+  'A388', 'A380', 'B744', 'B748', 'B742', 'B743', 'B74S', 'BLCF',
+  'A342', 'A343', 'A345', 'A346', 'A124', 'A225', 'C5M', 'IL96'
+]);
+
+const HEAVY_WIDEBODY_TYPES = new Set([
+  'B772', 'B773', 'B77W', 'B77L', 'B778', 'B779',
+  'B788', 'B789', 'B78X',
+  'A359', 'A35K',
+  'A332', 'A333', 'A338', 'A339',
+  'A306', 'A30B', 'A310', 'A3ST',
+  'B762', 'B763', 'B764', 'B752', 'B753',
+  'MD11', 'DC10', 'L101', 'IL76'
+]);
+
+const CARGO_OPERATOR_PREFIXES = new Set([
+  'FDX', 'UPS', 'GTI', 'CLX', 'NCA', 'AIH', 'GEC', 'CKS', 'ABX', 'BOX',
+  'SQC', 'ATN', 'PAC', 'SOO', 'TAY', 'BCS', 'DHL', 'DHK', 'MPH', 'KZR',
+  'CAO', 'CKK', 'CSS', 'YZR', 'CJT', 'MNB', 'FPO', 'SWT', 'KMI', 'AZG'
+]);
+
+const MILITARY_FIGHTER_TYPES = new Set([
+  'F15', 'F16', 'F18', 'F18H', 'F18S', 'F22', 'F35', 'FA50', 'T50', 'T38',
+  'EUFI', 'RFAL', 'MIR2', 'TORN', 'HAWK', 'M346', 'L39', 'A10', 'AV8B',
+  'SU27', 'SU30', 'SU35', 'MIG29', 'J10', 'J11', 'J20', 'GRIP', 'B1', 'B2', 'B52', 'U2'
+]);
+
+const MILITARY_TRANSPORT_TYPES = new Set([
+  'C17', 'C130', 'C30J', 'C5', 'C5M', 'A400', 'K35R', 'KC10', 'KC46', 'A332M',
+  'P8', 'P3', 'E3CF', 'E3TF', 'E6', 'E737', 'C2', 'C27J', 'CN35', 'C295', 'V22', 'A124'
+]);
+
+const MILITARY_CALLSIGN_PREFIXES = [
+  'RCH', 'REACH', 'CNV', 'ROKAF', 'KAF', 'JASDF', 'RRR', 'GAF', 'IAM',
+  'FAF', 'CFC', 'ASY', 'KIW', 'NATO', 'FORTE', 'DUKE', 'PAT', 'SAM', 'EXEC'
+];
+
+const HELICOPTER_PREFIXES = [
+  'EC20', 'EC25', 'EC30', 'EC35', 'EC45', 'EC55', 'EC75',
+  'H125', 'H130', 'H135', 'H145', 'H155', 'H160', 'H175', 'H215', 'H225',
+  'AS32', 'AS35', 'AS50', 'AS55', 'AS65',
+  'B06', 'B206', 'B212', 'B222', 'B407', 'B412', 'B427', 'B429', 'B430', 'B505', 'UH1',
+  'S70', 'S76', 'S92', 'H60', 'UH60', 'SH60', 'HH60', 'CH47', 'H47', 'H53', 'AH64',
+  'AW09', 'AW19', 'A109', 'A119', 'A139', 'AW13', 'A169', 'A189',
+  'R22', 'R44', 'R66', 'BK17', 'MD52', 'MD60', 'MD90', 'MI8', 'MI17', 'MI26', 'KA32', 'KHP'
+];
+
+const BIZJET_PREFIXES = [
+  'GLF', 'G150', 'G200', 'G280', 'G500', 'G550', 'G600', 'G650', 'GA5C', 'GA6C', 'GA7C', 'GLEX', 'GL5T', 'GL7T',
+  'C500', 'C501', 'C510', 'C525', 'C25A', 'C25B', 'C25C', 'C550', 'C560', 'C56X', 'C650', 'C680', 'C68A', 'C700', 'C750',
+  'CL30', 'CL35', 'CL60', 'CRJ2',
+  'LJ24', 'LJ31', 'LJ35', 'LJ40', 'LJ45', 'LJ55', 'LJ60', 'LJ70', 'LJ75',
+  'E50P', 'E55P', 'E545', 'E550', 'E35L', 'E135',
+  'FA10', 'FA20', 'FA50', 'FA7X', 'FA8X', 'F900', 'F2TH',
+  'H25B', 'H25C', 'HA4T', 'HDJT', 'PRM1', 'BE40', 'EA50', 'SF50', 'PC24', 'GALX'
+];
+
+const PROP_PREFIXES = [
+  'C150', 'C152', 'C162', 'C170', 'C172', 'C177', 'C180', 'C182', 'C185', 'C206', 'C207', 'C208', 'C210', 'C310', 'C337', 'C340', 'C402', 'C414', 'C421', 'C441',
+  'PA18', 'PA24', 'PA28', 'P28A', 'P28B', 'P28R', 'P28T', 'PA30', 'PA31', 'PA32', 'PA34', 'PA38', 'PA44', 'PA46', 'M600',
+  'SR20', 'SR22', 'S22T', 'DA20', 'DA40', 'DA42', 'DA62',
+  'BE19', 'BE20', 'BE23', 'BE33', 'BE35', 'BE36', 'BE55', 'BE58', 'BE76', 'BE9L', 'B190', 'B350',
+  'AT43', 'AT45', 'AT72', 'AT75', 'AT76', 'DH8A', 'DH8B', 'DH8C', 'DH8D', 'DHC6', 'DHC2',
+  'PC12', 'PC21', 'TBM7', 'TBM8', 'TBM9', 'P180', 'SF34', 'SW4', 'JS32', 'JS41', 'BN2P', 'M20P', 'M20T', 'RV7', 'RV8', 'RV10', 'RV12', 'KT1', 'P208', 'P200'
+];
+
+const UAV_TYPES = new Set(['RQ4', 'MQ9', 'MQ1', 'Q4', 'HRON', 'TB2', 'GLID']);
+
+/**
+ * Classify an aircraft by physical size & operational purpose for tailored 3D globe silhouettes.
+ * Returns { kind, labelKo, scale, role }.
+ */
+export function classifyAircraftIcon(flight) {
+  if (!flight) return { kind: 'narrowbody', labelKo: '중형 여객기', scale: 1.0, role: 'commercial' };
+
+  const t = String(flight.aircraftType || '').trim().toUpperCase();
+  const cat = String(flight.category || '').trim().toUpperCase();
+  const cs = String(flight.callsign || '').trim().toUpperCase();
+  const label = String(flight.aircraftLabel || '').toUpperCase();
+  const csPrefix = cs.slice(0, 3);
+
+  // 1. Balloon / Airship or UAV
+  if (cat === 'B2' || t === 'BALL' || t === 'SHIP') {
+    return { kind: 'balloon', labelKo: '기구 · 비행선', scale: 0.9, role: 'special' };
+  }
+  if (cat === 'B6' || UAV_TYPES.has(t)) {
+    return { kind: 'uav', labelKo: '무인기 (UAV)', scale: 0.88, role: 'uav' };
+  }
+
+  // 2. Helicopter / Rotorcraft
+  if (cat === 'A7' || HELICOPTER_PREFIXES.some((p) => t === p || t.startsWith(p))) {
+    return { kind: 'helicopter', labelKo: '헬리콥터', scale: 0.92, role: 'rotorcraft' };
+  }
+
+  // 3. Military (dbFlags military bit, A6 high-perf fighter, military ICAO types, or military callsigns)
+  const isMilCallsign = MILITARY_CALLSIGN_PREFIXES.some((p) => cs.startsWith(p) && /\d/.test(cs.slice(p.length)));
+  if (MILITARY_FIGHTER_TYPES.has(t) || cat === 'A6') {
+    return { kind: 'military_fighter', labelKo: '군용기 · 전투기', scale: 0.98, role: 'military' };
+  }
+  if (MILITARY_TRANSPORT_TYPES.has(t)) {
+    return { kind: 'military_heavy', labelKo: '군용 수송·정찰기', scale: 1.22, role: 'military' };
+  }
+  if (flight.isMilitary || isMilCallsign) {
+    const isHeavyMil = cat === 'A5' || SUPER_HEAVY_TYPES.has(t) || HEAVY_WIDEBODY_TYPES.has(t);
+    return isHeavyMil
+      ? { kind: 'military_heavy', labelKo: '군용 대형기', scale: 1.22, role: 'military' }
+      : { kind: 'military_fighter', labelKo: '군용기', scale: 0.98, role: 'military' };
+  }
+
+  // 4. Cargo / Freighter (dedicated cargo operators or freighter type/description)
+  const isCargoOp = CARGO_OPERATOR_PREFIXES.has(csPrefix);
+  const isFreighterDesc = /FREIGHTER|CARGO|BDSF|BCF|B74F|B77F|B76F/.test(label) || /^(B74F|B77F|B76F|MD11)$/.test(t);
+  if (isCargoOp || isFreighterDesc) {
+    const isQuad = SUPER_HEAVY_TYPES.has(t);
+    return {
+      kind: 'cargo',
+      labelKo: isQuad ? '초대형 화물기' : '대형 화물기',
+      scale: isQuad ? 1.32 : 1.18,
+      role: 'cargo'
+    };
+  }
+
+  // 5. Super-Heavy 4-Engine Widebody (A380, B747, A340)
+  if (SUPER_HEAVY_TYPES.has(t)) {
+    return { kind: 'super_heavy', labelKo: '초대형 여객기 (4발)', scale: 1.38, role: 'commercial' };
+  }
+
+  // 6. Heavy Widebody Twin-Jet (B777, B787, A350, A330, B767, or A5/A4 category)
+  if (HEAVY_WIDEBODY_TYPES.has(t) || cat === 'A5' || cat === 'A4') {
+    return { kind: 'heavy', labelKo: '대형 광동체기', scale: 1.18, role: 'commercial' };
+  }
+
+  // 7. General Aviation / Propeller / Turboprop / Glider
+  if (cat === 'A1' || cat === 'B1' || cat === 'B4' || PROP_PREFIXES.some((p) => t === p || t.startsWith(p))) {
+    const isTurbopropAirliner = /^(AT4|AT7|DH8|SF34|B190|B350)/.test(t);
+    return {
+      kind: 'prop',
+      labelKo: isTurbopropAirliner ? '터보프롭 여객기' : '경비행기 · 프로펠러',
+      scale: isTurbopropAirliner ? 0.92 : 0.8,
+      role: 'ga'
+    };
+  }
+
+  // 8. Business Jet / Small Regional Jet
+  if (BIZJET_PREFIXES.some((p) => t === p || t.startsWith(p)) || cat === 'A2') {
+    return { kind: 'bizjet', labelKo: '비즈니스 제트', scale: 0.86, role: 'bizjet' };
+  }
+
+  // 9. Speed/altitude heuristic when OpenSky gives no aircraft type or category
+  if (t === 'ADS-B' || !t) {
+    if ((flight.speedKts || 0) > 0 && (flight.speedKts || 0) < 165 && (flight.altitudeFt || 0) < 14000) {
+      return { kind: 'prop', labelKo: '소형기 (추정)', scale: 0.82, role: 'ga' };
+    }
+  }
+
+  // Default: Standard Narrowbody Airliner (A320, B737, E190, etc.)
+  return { kind: 'narrowbody', labelKo: '중형 여객기', scale: 0.98, role: 'commercial' };
+}
+
