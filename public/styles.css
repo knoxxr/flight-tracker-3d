@@ -1173,3 +1173,164 @@ body {
     font-size: 13.5px;
   }
 }
+
+/* Emergency Squawk Live Alert Banner (7700 / 7600 / 7500) */
+.emergency-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(153, 27, 27, 0.34);
+  border: 1px solid rgba(248, 113, 113, 0.58);
+  color: #fecaca;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.emergency-chip {
+  border: 1px solid rgba(252, 165, 165, 0.55);
+  background: rgba(220, 38, 38, 0.45);
+  color: #fff;
+  border-radius: 99px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease;
+}
+
+.emergency-chip:hover {
+  background: rgba(239, 68, 68, 0.78);
+  transform: translateY(-1px);
+}
+
+/* Interactive One-Click Category Filter Legend */
+.legend-filter-btn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  color: inherit;
+  font: inherit;
+  padding: 2px 5px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.legend-filter-btn:hover {
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+.legend-filter-btn.active {
+  background: rgba(56, 189, 248, 0.24);
+  border-color: rgba(56, 189, 248, 0.75);
+  color: #e0f2fe;
+  font-weight: 700;
+}
+
+.legend-filter-btn[data-filter="estimated"].active {
+  background: rgba(192, 132, 252, 0.24);
+  border-color: rgba(192, 132, 252, 0.8);
+  color: #f3e8ff;
+}
+
+.legend-clear-btn {
+  appearance: none;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* Airport Live Board & NOAA METAR Card */
+.metar-card {
+  background: rgba(8, 22, 40, 0.65);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.metar-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.metar-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: rgba(4, 12, 24, 0.55);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.metar-cell strong {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+
+.metar-raw {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  background: rgba(2, 8, 18, 0.65);
+  padding: 6px 8px;
+  border-radius: 6px;
+  word-break: break-word;
+}
+
+.airport-flights-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  padding: 2px 2px 0;
+}
+
+.airport-flights-header strong {
+  font-family: var(--font-mono);
+  color: var(--accent-sky);
+}
+
+.apt-dir-pill {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: 5px;
+}
+
+.apt-dir-pill.arr {
+  background: rgba(74, 222, 128, 0.18);
+  color: #86efac;
+  border: 1px solid rgba(74, 222, 128, 0.4);
+}
+
+.apt-dir-pill.dep {
+  background: rgba(56, 189, 248, 0.18);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+}
+
+.apt-dir-pill.near {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+

@@ -109,6 +109,7 @@ export class Globe3D {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.onSelectFlight = options.onSelectFlight || (() => {});
+    this.onSelectAirport = options.onSelectAirport || (() => {});
     this.onHoverFlight = options.onHoverFlight || (() => {});
     this.onCameraSettled = options.onCameraSettled || (() => {});
 
@@ -139,6 +140,7 @@ export class Globe3D {
     this.flights = [];
     this.airports = [];
     this.selectedIcao = null;
+    this.selectedAirportIata = null;
     this.hoveredIcao = null;
     this.followSelected = false;
 
@@ -158,6 +160,7 @@ export class Globe3D {
 
     // Hit-test cache for pointer interaction
     this.screenFlights = [];
+    this.screenAirports = [];
 
     // Interaction state
     this.isDragging = false;
@@ -384,12 +387,22 @@ export class Globe3D {
           const tapRadius = e.pointerType === 'touch' ? 30 : 18;
           const hit = this._hitTest(px, py, tapRadius);
           if (hit) {
+            this.selectedAirportIata = null;
             this.selectedIcao = hit.flight.icao24;
             this.onSelectFlight(hit.flight);
           } else {
-            this.selectedIcao = null;
-            this.followSelected = false;
-            this.onSelectFlight(null);
+            const airportHit = this.options.showAirports ? this._hitTestAirport(px, py, tapRadius) : null;
+            if (airportHit) {
+              this.selectedIcao = null;
+              this.followSelected = false;
+              this.selectedAirportIata = airportHit.airport.iata;
+              this.onSelectAirport(airportHit.airport);
+            } else {
+              this.selectedIcao = null;
+              this.selectedAirportIata = null;
+              this.followSelected = false;
+              this.onSelectFlight(null);
+            }
           }
         }
       }
@@ -1049,10 +1062,25 @@ export class Globe3D {
     }
   }
 
+  _hitTestAirport(px, py, maxDist = 18) {
+    let best = null;
+    let bestD = maxDist;
+    for (let i = 0; i < this.screenAirports.length; i++) {
+      const item = this.screenAirports[i];
+      const d = Math.hypot(item.x - px, item.y - py);
+      if (d <= bestD) {
+        bestD = d;
+        best = item;
+      }
+    }
+    return best;
+  }
+
   _drawAirports(ctx, mat, cx, cy, R, isLight, placedBoxes = []) {
     const showLabels = this.zoom >= (this.options.showPlaces ? 2.1 : 1.55);
     const W = this.width;
     const H = this.height;
+    this.screenAirports = [];
     ctx.font = '600 9.5px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
@@ -1071,15 +1099,29 @@ export class Globe3D {
       if (p.z <= 0.08) continue;
       if (p.x < -10 || p.x > W + 10 || p.y < -10 || p.y > H + 10) continue;
       const alpha = Math.min(1, p.z * 2.2);
+      const isSelectedApt = this.selectedAirportIata === a.iata;
+      this.screenAirports.push({ airport: a, x: p.x, y: p.y });
 
-      ctx.fillStyle = isLight
-        ? `rgba(14, 116, 144, ${0.76 * alpha})`
-        : `rgba(56, 189, 248, ${0.72 * alpha})`;
+      if (isSelectedApt) {
+        ctx.save();
+        ctx.strokeStyle = isLight ? 'rgba(2, 132, 199, 0.9)' : 'rgba(56, 189, 248, 0.95)';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 8.5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = isSelectedApt
+        ? '#38bdf8'
+        : (isLight
+          ? `rgba(14, 116, 144, ${0.76 * alpha})`
+          : `rgba(56, 189, 248, ${0.72 * alpha})`);
       ctx.beginPath();
-      ctx.arc(p.x, p.y, this.zoom > 2 ? 2.4 : 1.7, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, isSelectedApt ? 3.5 : (this.zoom > 2 ? 2.4 : 1.7), 0, Math.PI * 2);
       ctx.fill();
 
-      if (showLabels && p.z > 0.25) {
+      if ((showLabels || isSelectedApt) && p.z > 0.25) {
         const w = ctx.measureText(a.iata).width;
         const candidates = [
           [p.x + 5, p.y],
@@ -1088,16 +1130,18 @@ export class Globe3D {
         ];
         for (const [lx, ly] of candidates) {
           const box = [lx - 2, ly - 6, lx + w + 3, ly + 6];
-          if (!overlaps(box[0], box[1], box[2], box[3])) {
+          if (isSelectedApt || !overlaps(box[0], box[1], box[2], box[3])) {
             placedBoxes.push(box);
             ctx.lineWidth = 2.4;
             ctx.strokeStyle = isLight
               ? `rgba(240, 246, 252, ${0.82 * alpha})`
               : `rgba(4, 12, 24, ${0.86 * alpha})`;
             ctx.strokeText(a.iata, lx, ly);
-            ctx.fillStyle = isLight
-              ? `rgba(14, 116, 144, ${0.88 * alpha})`
-              : `rgba(125, 211, 252, ${0.86 * alpha})`;
+            ctx.fillStyle = isSelectedApt
+              ? '#7dd3fc'
+              : (isLight
+                ? `rgba(14, 116, 144, ${0.88 * alpha})`
+                : `rgba(125, 211, 252, ${0.86 * alpha})`);
             ctx.fillText(a.iata, lx, ly);
             break;
           }
@@ -1338,21 +1382,26 @@ export class Globe3D {
       const isSelected = flight.icao24 === this.selectedIcao;
       const isHovered = flight.icao24 === this.hoveredIcao;
       const isEstimated = Boolean(flight.estimated);
+      const isEmergency = !isEstimated && (flight.squawk === '7700' || flight.squawk === '7600' || flight.squawk === '7500');
       const depthAlpha = Math.max(0.32, Math.min(1, (z + 0.25) * 1.15));
-      const color = isEstimated
-        ? (isLight ? '#9333ea' : '#c084fc')
-        : (this.options.altitudeColor
-          ? altitudeColor(flight.altitudeFt || 0, isLight)
-          : (isLight ? '#0369a1' : '#38bdf8'));
+      const color = isEmergency
+        ? '#ef4444'
+        : isEstimated
+          ? (isLight ? '#9333ea' : '#c084fc')
+          : (this.options.altitudeColor
+            ? altitudeColor(flight.altitudeFt || 0, isLight)
+            : (isLight ? '#0369a1' : '#38bdf8'));
 
       // 3D vertical altitude drop-line to ground shadow
-      if (surface && surface.z > 0 && (!dense || isSelected || this.zoom > 2.4)) {
-        ctx.strokeStyle = isSelected
-          ? 'rgba(251, 191, 36, 0.72)'
-          : isEstimated
-            ? 'rgba(192, 132, 252, 0.28)'
-            : (isLight ? 'rgba(15, 23, 42, 0.16)' : 'rgba(148, 210, 245, 0.18)');
-        ctx.lineWidth = isSelected ? 1.2 : 0.75;
+      if (surface && surface.z > 0 && (!dense || isSelected || isEmergency || this.zoom > 2.4)) {
+        ctx.strokeStyle = isEmergency
+          ? 'rgba(239, 68, 68, 0.85)'
+          : isSelected
+            ? 'rgba(251, 191, 36, 0.72)'
+            : isEstimated
+              ? 'rgba(192, 132, 252, 0.28)'
+              : (isLight ? 'rgba(15, 23, 42, 0.16)' : 'rgba(148, 210, 245, 0.18)');
+        ctx.lineWidth = (isSelected || isEmergency) ? 1.2 : 0.75;
         ctx.beginPath();
         ctx.moveTo(surface.x, surface.y);
         ctx.lineTo(x, y);
@@ -1370,20 +1419,37 @@ export class Globe3D {
         if (isEstimated) {
           ctx.setLineDash([3, 3]);
         }
-        if (!dense || isSelected || isHovered || isEstimated) {
+        if (!dense || isSelected || isHovered || isEstimated || isEmergency) {
           const grad = ctx.createLinearGradient(x, y, tail.x, tail.y);
-          grad.addColorStop(0, isSelected ? '#fbbf24' : color);
+          grad.addColorStop(0, isEmergency ? '#ef4444' : (isSelected ? '#fbbf24' : color));
           grad.addColorStop(1, isEstimated ? 'rgba(192, 132, 252, 0)' : 'rgba(56, 189, 248, 0)');
-          ctx.globalAlpha = (isSelected ? 0.85 : (isEstimated ? 0.52 : 0.42)) * depthAlpha;
+          ctx.globalAlpha = (isSelected || isEmergency ? 0.85 : (isEstimated ? 0.52 : 0.42)) * depthAlpha;
           ctx.strokeStyle = grad;
         } else {
           ctx.globalAlpha = 0.22 * depthAlpha;
           ctx.strokeStyle = color;
         }
-        ctx.lineWidth = isSelected ? 2.0 : (dense ? 0.85 : 1.15);
+        ctx.lineWidth = isSelected || isEmergency ? 2.0 : (dense ? 0.85 : 1.15);
         ctx.beginPath();
         ctx.moveTo(x, y);
         ctx.lineTo(tail.x, tail.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Emergency squawk pulsing crimson rings (7700 / 7600 / 7500)
+      if (isEmergency) {
+        const wave = ((now * 0.0022) % 1);
+        ctx.save();
+        ctx.strokeStyle = `rgba(239, 68, 68, ${(1 - wave) * 0.9})`;
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.arc(x, y, baseSize + 5 + wave * 18, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(248, 113, 113, 0.95)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(x, y, baseSize + 6.5, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
       }
@@ -1415,17 +1481,17 @@ export class Globe3D {
 
       // Size- & purpose-specific aircraft icon silhouette
       const iconMeta = flight._iconMeta || (flight._iconMeta = classifyAircraftIcon(flight));
-      const useFastLod = projected.length > 1600 && this.zoom < 1.65 && !isSelected && !isHovered;
+      const useFastLod = projected.length > 1600 && this.zoom < 1.65 && !isSelected && !isHovered && !isEmergency;
       const roleScale = iconMeta.scale || 1.0;
-      const s = (isSelected ? baseSize * 1.38 : isHovered ? baseSize * 1.22 : baseSize) * roleScale;
+      const s = (isSelected || isEmergency ? baseSize * 1.38 : isHovered ? baseSize * 1.22 : baseSize) * roleScale;
 
       ctx.save();
       ctx.translate(x, y);
       if (iconMeta.kind !== 'balloon') {
         ctx.rotate(angle);
       }
-      ctx.globalAlpha = isSelected || isHovered ? 1 : (isEstimated ? depthAlpha * 0.78 : depthAlpha);
-      ctx.fillStyle = isSelected ? (isEstimated ? '#e9d5ff' : '#fef08a') : color;
+      ctx.globalAlpha = isSelected || isHovered || isEmergency ? 1 : (isEstimated ? depthAlpha * 0.78 : depthAlpha);
+      ctx.fillStyle = isEmergency ? '#fca5a5' : (isSelected ? (isEstimated ? '#e9d5ff' : '#fef08a') : color);
 
       if (useFastLod) {
         ctx.beginPath();
@@ -1445,27 +1511,33 @@ export class Globe3D {
         ctx.closePath();
         ctx.fill();
       } else {
-        this._drawAircraftIcon(ctx, iconMeta.kind, s, isSelected, isEstimated, now);
+        this._drawAircraftIcon(ctx, iconMeta.kind, s, isSelected || isEmergency, isEstimated, now);
       }
 
       ctx.restore();
 
-      // Callsign (+ altitude when zoomed deep in) label
-      if (isSelected || (this.zoom >= 3.2 && z > 0.35)) {
+      // Callsign (+ altitude when zoomed deep in, or emergency squawk badge at any zoom)
+      if (isSelected || isEmergency || (this.zoom >= 3.2 && z > 0.35)) {
         ctx.save();
-        ctx.font = `${isSelected ? '700' : '600'} 10px ui-monospace, SFMono-Regular, Menlo, monospace`;
-        const baseLabel = (isEstimated ? '~' : '') + (flight.callsign || flight.icao24);
-        const label = (!isSelected && this.zoom >= 6.5 && flight.altitudeFt)
+        ctx.font = `${(isSelected || isEmergency) ? '700' : '600'} 10px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        const baseLabel = isEmergency
+          ? `🚨 ${flight.squawk} ${flight.callsign || flight.icao24}`
+          : ((isEstimated ? '~' : '') + (flight.callsign || flight.icao24));
+        const label = (!isSelected && !isEmergency && this.zoom >= 6.5 && flight.altitudeFt)
           ? `${baseLabel} ${Math.round(flight.altitudeFt / 1000)}k`
           : baseLabel;
         const tw = ctx.measureText(label).width + 8;
-        ctx.fillStyle = isLight ? 'rgba(255, 255, 255, 0.88)' : 'rgba(6, 15, 29, 0.84)';
+        ctx.fillStyle = isEmergency
+          ? 'rgba(153, 27, 27, 0.92)'
+          : (isLight ? 'rgba(255, 255, 255, 0.88)' : 'rgba(6, 15, 29, 0.84)');
         ctx.beginPath();
         ctx.roundRect(x + s + 5, y - 8, tw, 16, 4);
         ctx.fill();
-        ctx.fillStyle = isSelected
-          ? (isEstimated ? '#d8b4fe' : (isLight ? '#b45309' : '#fde047'))
-          : (isEstimated ? '#d8b4fe' : (isLight ? '#0f172a' : '#e2e8f0'));
+        ctx.fillStyle = isEmergency
+          ? '#fecaca'
+          : isSelected
+            ? (isEstimated ? '#d8b4fe' : (isLight ? '#b45309' : '#fde047'))
+            : (isEstimated ? '#d8b4fe' : (isLight ? '#0f172a' : '#e2e8f0'));
         ctx.textBaseline = 'middle';
         ctx.fillText(label, x + s + 9, y + 0.5);
         ctx.restore();

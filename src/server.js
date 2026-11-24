@@ -89,12 +89,49 @@ export function createIpRateLimiter({ windowMs = 60_000, max = 60 } = {}) {
   };
 }
 
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type'
+};
+
+export function parseMetarResponse(entry, icaoFallback = '') {
+  if (!entry || typeof entry !== 'object') return null;
+  const wdir = entry.wdir === 'VRB' ? 'VRB' : (Number.isFinite(Number(entry.wdir)) ? Number(entry.wdir) : null);
+  const wspd = Number.isFinite(Number(entry.wspd)) ? Number(entry.wspd) : null;
+  const wgst = Number.isFinite(Number(entry.wgst)) ? Number(entry.wgst) : null;
+  const tempC = Number.isFinite(Number(entry.temp)) ? Number(entry.temp) : null;
+  const dewpC = Number.isFinite(Number(entry.dewp)) ? Number(entry.dewp) : null;
+  const altimHpa = Number.isFinite(Number(entry.altim)) ? Math.round(Number(entry.altim)) : null;
+  const visib = entry.visib != null ? String(entry.visib) : null;
+  const fltCat = entry.fltCat ? String(entry.fltCat).toUpperCase() : null;
+  const clouds = Array.isArray(entry.clouds)
+    ? entry.clouds.map((c) => `${c.cover || ''}${c.base != null ? ` ${c.base}ft` : ''}`.trim()).filter(Boolean)
+    : [];
+  return {
+    icao: String(entry.icaoId || icaoFallback).toUpperCase(),
+    name: entry.name || null,
+    obsTime: entry.reportTime || (entry.obsTime ? new Date(entry.obsTime * 1000).toISOString() : null),
+    tempC,
+    dewpC,
+    wdir,
+    wspd,
+    wgst,
+    visib,
+    altimHpa,
+    fltCat,
+    clouds,
+    rawOb: entry.rawOb || ''
+  };
+}
+
 function sendJson(req, res, status, payload, extraHeaders = {}) {
   const jsonBuf = Buffer.from(JSON.stringify(payload), 'utf8');
   const headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     Vary: 'Accept-Encoding',
+    ...CORS_HEADERS,
     ...extraHeaders
   };
 
@@ -119,6 +156,7 @@ function sendPreEncoded(req, res, status, entry) {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'public, max-age=2',
     Vary: 'Accept-Encoding',
+    ...CORS_HEADERS,
     'Content-Length': body.length
   };
   if (useGzip) headers['Content-Encoding'] = 'gzip';
@@ -165,6 +203,8 @@ export function createAppServer(options = {}) {
   const snapshotCache = new Map(); // cacheKey -> { at, payload, jsonBuf, gzipBuf }
   const inFlightSnapshots = new Map(); // cacheKey -> Promise
   const staticGzipCache = new Map(); // fullPath -> { mtimeMs, gzBuf }
+  const metarCache = new Map(); // icao -> { at, data }
+  const metarFetcher = options.metarFetcher || null;
   const serverStats = { flightsRequests: 0, snapshotCacheHits: 0, rateLimitedCount: 0 };
 
   // Feed background harvester contacts directly into the oceanic anchor tracker
@@ -212,7 +252,10 @@ export function createAppServer(options = {}) {
 
       if (includeEstimated && provider !== 'adsbfi') {
         const liveSet = new Set(result.flights.map((f) => f.icao24));
-        const estimated = oceanicEstimator.getEstimatedFlights(liveSet);
+        const activeHubs = typeof adsbClient.getActiveCoverageHubs === 'function'
+          ? adsbClient.getActiveCoverageHubs()
+          : null;
+        const estimated = oceanicEstimator.getEstimatedFlights(liveSet, Date.now(), activeHubs);
         estimatedCount = estimated.length;
         if (estimatedCount > 0) {
           combinedFlights = [...result.flights, ...estimated];
@@ -235,6 +278,53 @@ export function createAppServer(options = {}) {
       totalCount: combinedFlights.length,
       flights: combinedFlights
     };
+  }
+
+  async function fetchAirportMetar(rawCode) {
+    const code = String(rawCode || '').trim().toUpperCase();
+    let icao = code;
+    if (code.length === 3) {
+      const found = AIRPORTS.find((a) => a.iata === code);
+      if (found?.icao) icao = found.icao;
+    }
+    if (!/^[A-Z0-9]{4}$/.test(icao)) {
+      return { ok: false, error: '유효한 공항 ICAO 코드가 아닙니다' };
+    }
+    const cached = metarCache.get(icao);
+    if (cached && Date.now() - cached.at < 10 * 60_000) {
+      return { ok: true, cached: true, metar: cached.data };
+    }
+    try {
+      let parsed = null;
+      if (typeof metarFetcher === 'function') {
+        parsed = await metarFetcher(icao);
+      } else {
+        const res = await fetch(
+          `https://aviationweather.gov/api/data/metar?ids=${encodeURIComponent(icao)}&format=json`,
+          {
+            headers: { Accept: 'application/json', 'User-Agent': 'AeroGlobe3D/1.0' },
+            signal: AbortSignal.timeout(6000)
+          }
+        );
+        if (res.ok) {
+          const arr = await res.json();
+          if (Array.isArray(arr) && arr.length > 0) {
+            parsed = parseMetarResponse(arr[0], icao);
+          }
+        }
+      }
+      if (!parsed) {
+        return { ok: false, icao, error: '현재 METAR 기상 정보를 수신할 수 없습니다' };
+      }
+      metarCache.set(icao, { at: Date.now(), data: parsed });
+      if (metarCache.size > 300) {
+        const oldest = metarCache.keys().next().value;
+        if (oldest) metarCache.delete(oldest);
+      }
+      return { ok: true, cached: false, metar: parsed };
+    } catch {
+      return { ok: false, icao, error: 'METAR 기상 서버 연결 시간 초과' };
+    }
   }
 
   async function getCachedGlobalSnapshot(params) {
@@ -273,6 +363,12 @@ export function createAppServer(options = {}) {
 
   const server = http.createServer(async (req, res) => {
     try {
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, CORS_HEADERS);
+        res.end();
+        return;
+      }
+
       const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const pathname = reqUrl.pathname;
       const ip = getClientIp(req);
@@ -302,6 +398,12 @@ export function createAppServer(options = {}) {
 
       if (pathname === '/api/airports') {
         return sendJson(req, res, 200, { count: AIRPORTS.length, airports: AIRPORTS }, { 'Cache-Control': 'public, max-age=3600' });
+      }
+
+      if (pathname === '/api/weather/metar') {
+        const code = reqUrl.searchParams.get('icao') || reqUrl.searchParams.get('iata') || '';
+        const metarResult = await fetchAirportMetar(code);
+        return sendJson(req, res, 200, metarResult, { 'Cache-Control': 'public, max-age=300' });
       }
 
       if (pathname === '/api/flights') {
@@ -386,7 +488,8 @@ export function createAppServer(options = {}) {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform',
           Connection: 'keep-alive',
-          'X-Accel-Buffering': 'no'
+          'X-Accel-Buffering': 'no',
+          ...CORS_HEADERS
         });
         if (typeof res.flushHeaders === 'function') res.flushHeaders();
         res.write(': connected\n\n');

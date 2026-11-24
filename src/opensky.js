@@ -362,9 +362,10 @@ export class LiveAdsbClient {
     this.lastFlyItalyFetchMs = 0;
     this.lastFlyItalySuccessMs = 0;
 
-    // 98-cell seamless global grid aggregator (adsb.fi + adsb.lol) + priority camera queue
+    // 103-cell seamless global grid aggregator (adsb.fi + adsb.lol) + priority camera queue
     this.hubFlights = new Map(); // icao24 -> { flight, fetchedAt }
     this.scannedCells = new Set();
+    this.activeHubCoverage = new Map(); // cellId -> { lat, lon, count, updatedAt }
     this.hubCursor = 0;
     this.priorityQueue = [];
     this.harvesterTimer = null;
@@ -677,9 +678,9 @@ export class LiveAdsbClient {
     if (typeof this.onFlightsObserved === 'function' && flights.length > 0) {
       this.onFlightsObserved(flights, now);
     }
-    // Retain contacts up to 4 minutes (smoothly dead-reckoned while 98 cells cycle every ~69s)
+    // Retain contacts up to 320s (5m20s) so flights stay continuously live across 103-cell idle sweeps
     for (const [key, entry] of this.hubFlights.entries()) {
-      if (now - entry.fetchedAt > 240_000) {
+      if (now - entry.fetchedAt > 320_000) {
         this.hubFlights.delete(key);
       }
     }
@@ -690,11 +691,22 @@ export class LiveAdsbClient {
     const list = [];
     for (const entry of this.hubFlights.values()) {
       const ageSec = (now - entry.fetchedAt) / 1000;
-      if (ageSec <= 240) {
-        list.push(deadReckonFlight(entry.flight, Math.min(ageSec, 90)));
+      if (ageSec <= 320) {
+        list.push(deadReckonFlight(entry.flight, Math.min(ageSec, 120)));
       }
     }
     return this.sampleEvenly(list, this.maxFlights);
+  }
+
+  getActiveCoverageHubs() {
+    const now = Date.now();
+    const out = [];
+    for (const [id, entry] of this.activeHubCoverage.entries()) {
+      if (now - entry.updatedAt <= 20 * 60_000) {
+        out.push({ id, lat: entry.lat, lon: entry.lon });
+      }
+    }
+    return out;
   }
 
   _filterNearbyCached(lat, lon, distNm = 250) {
@@ -752,13 +764,24 @@ export class LiveAdsbClient {
           this.fetchAdsbFi(cellA.lat, cellA.lon, 250),
           this.fetchAdsbLol(cellB.lat, cellB.lon, 250)
         ]);
+        const now = Date.now();
         if (resFi.ok) {
           this._mergeIntoHubCache(resFi.flights);
-          if (cellA.id) this.scannedCells.add(cellA.id);
+          if (cellA.id) {
+            this.scannedCells.add(cellA.id);
+            if (resFi.flights.length >= 3) {
+              this.activeHubCoverage.set(cellA.id, { lat: cellA.lat, lon: cellA.lon, count: resFi.flights.length, updatedAt: now });
+            }
+          }
         }
         if (resLol.ok) {
           this._mergeIntoHubCache(resLol.flights);
-          if (cellB.id) this.scannedCells.add(cellB.id);
+          if (cellB.id) {
+            this.scannedCells.add(cellB.id);
+            if (resLol.flights.length >= 3) {
+              this.activeHubCoverage.set(cellB.id, { lat: cellB.lat, lon: cellB.lon, count: resLol.flights.length, updatedAt: now });
+            }
+          }
         }
       } finally {
         this.harvesterBusy = false;

@@ -125,7 +125,20 @@ const MAX_ROUTE_ESTIMATE_MS = 10 * 60 * 60 * 1000; // Up to 10 hours for ultra-l
 const MAX_HEADING_ESTIMATE_MS = 50 * 60 * 1000; // Conservative 50 min cap when route is unknown
 const MIN_SILENCE_FOR_ESTIMATE_MS = 35 * 1000; // Wait 35s after leaving live set before estimating
 const MAX_STORED_ANCHORS = 4000;
+const MAX_PERSISTED_ANCHORS = 2500;
+const TERRESTRIAL_COVERAGE_RADIUS_KM = 370; // ~200 NM active ADS-B receiver radius
 const UPSTASH_KEY = 'aeroglobe:oceanic_anchors:v1';
+
+export function isInsideCoverage(lat, lon, hubs, radiusKm = TERRESTRIAL_COVERAGE_RADIUS_KM) {
+  if (!Array.isArray(hubs) || hubs.length === 0) return false;
+  const latDegMargin = radiusKm / 111.0;
+  for (let i = 0; i < hubs.length; i++) {
+    const h = hubs[i];
+    if (Math.abs(lat - h.lat) > latDegMargin) continue;
+    if (haversineKm(lat, lon, h.lat, h.lon) <= radiusKm) return true;
+  }
+  return false;
+}
 
 export class OceanicEstimator {
   constructor(options = {}) {
@@ -147,6 +160,7 @@ export class OceanicEstimator {
 
   /**
    * Export active anchors for free local disk or Upstash Redis persistence.
+   * Prioritizes resolved-route & long-haul widebody anchors so transoceanic flights are never evicted.
    */
   exportState(nowMs = Date.now()) {
     const entries = [];
@@ -162,6 +176,17 @@ export class OceanicEstimator {
         route: entry.route || null,
         routeCheckedAt: entry.routeCheckedAt || 0
       });
+    }
+    if (entries.length > MAX_PERSISTED_ANCHORS) {
+      entries.sort((a, b) => {
+        const aScore = (a.routeState === 'resolved' ? 4 : 0) +
+          (LONG_HAUL_TYPES.has(String(a.flight?.aircraftType || '').toUpperCase()) ? 2 : 0);
+        const bScore = (b.routeState === 'resolved' ? 4 : 0) +
+          (LONG_HAUL_TYPES.has(String(b.flight?.aircraftType || '').toUpperCase()) ? 2 : 0);
+        if (bScore !== aScore) return bScore - aScore;
+        return b.observedAtMs - a.observedAtMs;
+      });
+      entries.length = MAX_PERSISTED_ANCHORS;
     }
     return { version: 1, savedAt: nowMs, entries };
   }
@@ -280,6 +305,26 @@ export class OceanicEstimator {
     }
   }
 
+  _evictLowestPriorityAnchor() {
+    let victimKey = null;
+    let victimRank = Infinity;
+    let victimTime = Infinity;
+    let checked = 0;
+    for (const [k, entry] of this.anchors.entries()) {
+      const isResolved = entry.routeState === 'resolved' ? 2 : 0;
+      const isLongHaul = LONG_HAUL_TYPES.has(String(entry.flight?.aircraftType || '').toUpperCase()) ? 1 : 0;
+      const rank = isResolved + isLongHaul;
+      if (rank < victimRank || (rank === victimRank && entry.observedAtMs < victimTime)) {
+        victimKey = k;
+        victimRank = rank;
+        victimTime = entry.observedAtMs;
+        if (rank === 0) break;
+      }
+      if (++checked >= 400) break;
+    }
+    if (victimKey) this.anchors.delete(victimKey);
+  }
+
   /**
    * Record currently received live airborne flights as real last-seen anchors.
    * Proactively pre-warms routes for high-altitude long-haul jets so coastal exits are seamless!
@@ -302,8 +347,7 @@ export class OceanicEstimator {
         }
       } else {
         if (this.anchors.size >= MAX_STORED_ANCHORS) {
-          const oldestKey = this.anchors.keys().next().value;
-          if (oldestKey) this.anchors.delete(oldestKey);
+          this._evictLowestPriorityAnchor();
         }
         entry = {
           flight: f,
@@ -391,9 +435,11 @@ export class OceanicEstimator {
 
   /**
    * Compute currently active Estimated positions for real aircraft that have flown out of live ADS-B range.
+   * When activeCoverageHubs is provided, suppresses inland false positives inside active terrestrial receivers.
    */
-  getEstimatedFlights(liveIcaoSet, nowMs = Date.now()) {
+  getEstimatedFlights(liveIcaoSet, nowMs = Date.now(), activeCoverageHubs = null) {
     const estimated = [];
+    const hasCoverageMask = Array.isArray(activeCoverageHubs) && activeCoverageHubs.length > 0;
 
     for (const [icao24, entry] of this.anchors.entries()) {
       if (liveIcaoSet && liveIcaoSet.has(icao24)) {
@@ -407,11 +453,6 @@ export class OceanicEstimator {
       const elapsedSec = elapsedMs / 1000;
       const speedKmh = f.speedKmh || Math.round((f.speedKts || 450) * 1.852);
       const distKm = (speedKmh * elapsedSec) / 3600;
-
-      // High-priority route lookup for planes actively entering oceanic blind spots
-      if (entry.routeState === 'idle') {
-        this._enqueueRouteLookup(icao24, f.callsign, true);
-      }
 
       if (entry.routeState === 'resolved' && entry.route) {
         if (elapsedMs > MAX_ROUTE_ESTIMATE_MS) {
@@ -429,6 +470,10 @@ export class OceanicEstimator {
           const step = advanceAlongGreatCircle(f.lat, f.lon, dest.lat, dest.lon, distKm);
           if (step.arrived) {
             this.anchors.delete(icao24);
+            continue;
+          }
+
+          if (hasCoverageMask && isInsideCoverage(step.lat, step.lon, activeCoverageHubs)) {
             continue;
           }
 
@@ -465,6 +510,12 @@ export class OceanicEstimator {
       // Conservative heading-based projection when route is unavailable or pending (high-altitude jets only, <= 50 min)
       if (elapsedMs <= MAX_HEADING_ESTIMATE_MS && (f.altitudeFt || 0) >= 24000 && (f.speedKts || 0) >= 280) {
         const step = advanceByHeading(f.lat, f.lon, f.heading || 0, distKm);
+        if (hasCoverageMask && isInsideCoverage(step.lat, step.lon, activeCoverageHubs)) {
+          continue;
+        }
+        if (entry.routeState === 'idle') {
+          this._enqueueRouteLookup(icao24, f.callsign, true);
+        }
         estimated.push({
           ...f,
           lat: step.lat,

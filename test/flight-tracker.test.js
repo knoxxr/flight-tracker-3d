@@ -6,9 +6,9 @@ import {
   deadReckonFlight
 } from '../src/opensky.js';
 import { parseAdsbDbResponse, parseHexDbRoute } from '../src/enrichment.js';
-import { OceanicEstimator, advanceAlongGreatCircle } from '../src/oceanic-estimator.js';
+import { OceanicEstimator, advanceAlongGreatCircle, isInsideCoverage } from '../src/oceanic-estimator.js';
 import { resolveAircraftCountry, decodeCallsign, classifyAircraftIcon } from '../public/aviation-meta.js';
-import { createAppServer, createIpRateLimiter } from '../src/server.js';
+import { createAppServer, createIpRateLimiter, parseMetarResponse } from '../src/server.js';
 
 test('classifyAircraftIcon distinguishes aircraft by size and purpose', () => {
   assert.equal(classifyAircraftIcon({ aircraftType: 'A388', callsign: 'UAE322' }).kind, 'super_heavy');
@@ -585,3 +585,125 @@ test('OceanicEstimator exports and restores persisted anchors cleanly across ser
   estA.stop();
   estB.stop();
 });
+
+test('OceanicEstimator suppresses inland estimates inside active terrestrial coverage while keeping mid-ocean flights', () => {
+  const t0 = 1_700_000_000_000;
+  const est = new OceanicEstimator();
+  const activeHubs = [
+    { id: 'EU-PAR', lat: 48.8, lon: 2.3 },
+    { id: 'EU-FRA', lat: 50.1, lon: 8.6 },
+    { id: 'EA-TYO', lat: 35.6, lon: 139.8 }
+  ];
+
+  // Inland European short-haul jet (still inside EU-PAR/EU-FRA terrestrial coverage)
+  // vs transpacific widebody already far into North Pacific (outside activeHubs)
+  est.observeLiveFlights([
+    {
+      icao24: '39a111',
+      callsign: 'AFR17ET',
+      aircraftType: 'A20N',
+      lat: 48.9,
+      lon: 2.5,
+      altitudeFt: 32000,
+      speedKts: 430,
+      speedKmh: 796,
+      heading: 75,
+      onGround: false
+    },
+    {
+      icao24: '71bf77',
+      callsign: 'KAL017',
+      aircraftType: 'B77W',
+      lat: 36.2,
+      lon: 141.5,
+      altitudeFt: 35000,
+      speedKts: 490,
+      speedKmh: 907,
+      heading: 55,
+      onGround: false
+    }
+  ], t0);
+
+  const pacAnchor = est.anchors.get('71bf77');
+  pacAnchor.routeState = 'resolved';
+  pacAnchor.route = {
+    callsignIata: 'KE17',
+    origin: { iata: 'ICN', lat: 37.4691, lon: 126.4505 },
+    destination: { iata: 'LAX', lat: 33.9416, lon: -118.4085 }
+  };
+
+  assert.equal(isInsideCoverage(49.1, 3.8, activeHubs), true);
+  assert.equal(isInsideCoverage(45.0, 175.0, activeHubs), false);
+
+  // 15 minutes later: AFR17ET is ~200 km east of Paris (inside EU-PAR/EU-FRA coverage -> suppressed),
+  // while KAL017 is ~226 km northeast into open Pacific (outside EA-TYO 370km radius -> wait, 2h later definitely outside)
+  const estAt2h = est.getEstimatedFlights(new Set(), t0 + 2 * 3600_000, activeHubs);
+  assert.equal(estAt2h.length, 1);
+  assert.equal(estAt2h[0].icao24, '71bf77');
+
+  // At 8 minutes later: AFR17ET is still inside European coverage -> suppressed!
+  const estAt8m = est.getEstimatedFlights(new Set(), t0 + 8 * 60_000, activeHubs);
+  assert.equal(estAt8m.some((f) => f.icao24 === '39a111'), false);
+  est.stop();
+});
+
+test('HTTP server serves /api/weather/metar with IATA->ICAO resolution, caching, and CORS headers', async () => {
+  let metarCalls = 0;
+  const mockAdsbClient = {
+    async fetchLiveFlights() {
+      return { ok: true, source: 'opensky', updatedAt: Date.now(), totalRaw: 0, flights: [] };
+    },
+    getStatus() {
+      return { activeSource: 'opensky' };
+    }
+  };
+  const server = createAppServer({
+    adsbClient: mockAdsbClient,
+    async metarFetcher(icao) {
+      metarCalls++;
+      return parseMetarResponse({
+        icaoId: icao,
+        name: 'Incheon Intl',
+        reportTime: '2026-11-24T12:00:00Z',
+        temp: 9,
+        dewp: 2,
+        wdir: 310,
+        wspd: 12,
+        visib: '10+',
+        altim: 1022.4,
+        fltCat: 'VFR',
+        rawOb: 'METAR RKSI 241200Z 31012KT 9999 FEW035 09/02 Q1022'
+      }, icao);
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const optRes = await fetch(`${baseUrl}/api/flights`, { method: 'OPTIONS' });
+    assert.equal(optRes.status, 204);
+    assert.equal(optRes.headers.get('access-control-allow-origin'), '*');
+
+    const m1 = await fetch(`${baseUrl}/api/weather/metar?iata=ICN`);
+    assert.equal(m1.status, 200);
+    assert.equal(m1.headers.get('access-control-allow-origin'), '*');
+    const j1 = await m1.json();
+    assert.equal(j1.ok, true);
+    assert.equal(j1.cached, false);
+    assert.equal(j1.metar.icao, 'RKSI');
+    assert.equal(j1.metar.tempC, 9);
+    assert.equal(j1.metar.altimHpa, 1022);
+    assert.equal(j1.metar.fltCat, 'VFR');
+
+    // Second request hits 10-minute cache
+    const m2 = await fetch(`${baseUrl}/api/weather/metar?icao=RKSI`);
+    const j2 = await m2.json();
+    assert.equal(j2.ok, true);
+    assert.equal(j2.cached, true);
+    assert.equal(metarCalls, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
