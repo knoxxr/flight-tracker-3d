@@ -114,7 +114,7 @@ export class Globe3D {
 
     // Camera state (smoothly damped toward target)
     this.minZoom = options.minZoom ?? 0.85;
-    this.maxZoom = options.maxZoom ?? 30.0;
+    this.maxZoom = options.maxZoom ?? 150.0;
     this.camLat = options.initialLat ?? 32;
     this.camLon = options.initialLon ?? 126;
     this.zoom = options.initialZoom ?? 1.25;
@@ -313,7 +313,7 @@ export class Globe3D {
         return;
       }
 
-      // Single-finger / mouse orbit drag (scales 1/zoom for crisp precision even at 30x zoom)
+      // Single-finger / mouse orbit drag (1:1 pixel-locked even at 150x deep zoom)
       if (this.isDragging && activePointers.size === 1) {
         const dx = e.clientX - this.lastPointer.x;
         const dy = e.clientY - this.lastPointer.y;
@@ -322,11 +322,18 @@ export class Globe3D {
           this.dragMoved = true;
           this.followSelected = false;
         }
-        const sensitivity = (e.pointerType === 'touch' ? 0.34 : 0.28) / Math.max(0.85, this.zoom);
-        this.targetLon -= dx * sensitivity;
-        this.targetLat = Math.max(-82, Math.min(82, this.targetLat + dy * sensitivity));
-        this.velocityLon = -dx * sensitivity * 0.32;
-        this.velocityLat = dy * sensitivity * 0.32;
+        const baseRadius = this.width < this.height
+          ? Math.min(this.width * 0.45, this.height * 0.36)
+          : Math.min(this.width, this.height) * 0.39;
+        const R = Math.max(80, baseRadius * this.zoom);
+        const degPerPx = RAD2DEG / R;
+        const cosLat = Math.max(0.2, Math.cos(this.camLat * DEG2RAD));
+        const dLon = (-dx * degPerPx) / cosLat;
+        const dLat = dy * degPerPx;
+        this.targetLon += dLon;
+        this.targetLat = Math.max(-84, Math.min(84, this.targetLat + dLat));
+        this.velocityLon = dLon * 0.32;
+        this.velocityLat = dLat * 0.32;
         this.lastPointer = { x: e.clientX, y: e.clientY };
         return;
       }
@@ -400,14 +407,14 @@ export class Globe3D {
       'wheel',
       (e) => {
         e.preventDefault();
-        const factor = Math.exp(-e.deltaY * 0.0014);
+        const factor = Math.exp(-e.deltaY * 0.0018);
         this.targetZoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.targetZoom * factor));
       },
       { passive: false }
     );
 
     el.addEventListener('dblclick', () => {
-      this.targetZoom = Math.min(this.maxZoom, this.targetZoom * 1.75);
+      this.targetZoom = Math.min(this.maxZoom, this.targetZoom * 2.0);
     });
   }
 
@@ -474,19 +481,19 @@ export class Globe3D {
       this.targetLon += dt * 2.1;
     }
 
-    // Apply subtle inertia after dragging
-    if (!this.isDragging && (Math.abs(this.velocityLon) > 0.005 || Math.abs(this.velocityLat) > 0.005)) {
+    // Apply subtle inertia after dragging (fine threshold supports 150x deep zoom)
+    if (!this.isDragging && (Math.abs(this.velocityLon) > 0.0002 || Math.abs(this.velocityLat) > 0.0002)) {
       this.targetLon += this.velocityLon;
-      this.targetLat = Math.max(-82, Math.min(82, this.targetLat + this.velocityLat));
+      this.targetLat = Math.max(-84, Math.min(84, this.targetLat + this.velocityLat));
       this.velocityLon *= 0.91;
       this.velocityLat *= 0.91;
     }
 
-    // Smooth camera damping
+    // Smooth camera damping (multiplicative log-space zoom damping stays silky from 0.85x to 150x)
     const damp = 1 - Math.exp(-dt * 9.5);
     this.camLat += (this.targetLat - this.camLat) * damp;
     this.camLon += (this.targetLon - this.camLon) * damp;
-    this.zoom += (this.targetZoom - this.zoom) * damp;
+    this.zoom *= Math.pow(this.targetZoom / Math.max(0.01, this.zoom), damp);
 
     const ctx = this.ctx;
     const W = this.width;
@@ -643,21 +650,22 @@ export class Globe3D {
   }
 
   _drawGraticule(ctx, mat, cx, cy, R, isLight) {
-    const stepDeg = this.zoom >= 12 ? 2 : (this.zoom >= 5.5 ? 5 : (this.zoom >= 2.2 ? 15 : 30));
-    const sampleStep = this.zoom >= 8 ? 1 : (this.zoom >= 3.5 ? 2 : 4);
+    const stepDeg = this.zoom >= 70 ? 0.2 : (this.zoom >= 28 ? 0.5 : (this.zoom >= 12 ? 2 : (this.zoom >= 5.5 ? 5 : (this.zoom >= 2.2 ? 15 : 30))));
+    const sampleStep = this.zoom >= 70 ? 0.08 : (this.zoom >= 28 ? 0.2 : (this.zoom >= 8 ? 1 : (this.zoom >= 3.5 ? 2 : 4)));
     const W = this.width;
     const H = this.height;
     // Half angular viewport span for fast culling when deeply zoomed
     const spanDeg = this.zoom > 1.8 ? Math.min(95, (Math.max(W, H) / R) * RAD2DEG * 0.78 + stepDeg * 2) : 180;
-    const minLat = Math.max(-80, Math.floor((this.camLat - spanDeg) / stepDeg) * stepDeg);
-    const maxLat = Math.min(80, Math.ceil((this.camLat + spanDeg) / stepDeg) * stepDeg);
+    const minLat = Math.max(-84, Math.floor((this.camLat - spanDeg) / stepDeg) * stepDeg);
+    const maxLat = Math.min(84, Math.ceil((this.camLat + spanDeg) / stepDeg) * stepDeg);
 
     ctx.lineWidth = this.zoom >= 5 ? 0.55 : 0.7;
 
     // Parallels
-    for (let lat = minLat; lat <= maxLat; lat += stepDeg) {
-      const isMajor = lat === 0 || lat % 30 === 0;
-      ctx.strokeStyle = lat === 0
+    for (let lat = minLat; lat <= maxLat + 1e-6; lat += stepDeg) {
+      const isEq = Math.abs(lat) < 1e-4;
+      const isMajor = isEq || Math.abs(lat - Math.round(lat / 10) * 10) < 1e-4;
+      ctx.strokeStyle = isEq
         ? (isLight ? 'rgba(30, 64, 110, 0.24)' : 'rgba(125, 211, 252, 0.18)')
         : isMajor
           ? (isLight ? 'rgba(30, 64, 110, 0.11)' : 'rgba(148, 184, 218, 0.09)')
@@ -1260,7 +1268,7 @@ export class Globe3D {
 
       // Compute exact 2D screen-space heading angle by projecting a short forward step
       const hdgRad = (f.heading || 0) * DEG2RAD;
-      const stepDeg = Math.max(0.08, 0.65 / Math.max(1, this.zoom * 0.5));
+      const stepDeg = Math.max(0.005, 0.65 / Math.max(1, this.zoom * 0.5));
       const cosLat = Math.max(0.15, Math.cos(f.lat * DEG2RAD));
       const aheadLat = Math.max(-89, Math.min(89, f.lat + Math.cos(hdgRad) * stepDeg));
       const aheadLon = f.lon + (Math.sin(hdgRad) * stepDeg) / cosLat;
@@ -1269,7 +1277,7 @@ export class Globe3D {
 
       let tail = null;
       if (showTrails) {
-        const backDeg = Math.max(0.25, 2.4 / Math.max(1, this.zoom * 0.45));
+        const backDeg = Math.max(0.025, 2.4 / Math.max(1, this.zoom * 0.45));
         const backLat = Math.max(-89, Math.min(89, f.lat - Math.cos(hdgRad) * backDeg));
         const backLon = f.lon - (Math.sin(hdgRad) * backDeg) / cosLat;
         const pBack = this._projectVec(latLonToVec3(backLat, backLon), mat, cx, cy, R, lift);
@@ -1299,7 +1307,7 @@ export class Globe3D {
 
     const dense = projected.length > 700;
     const densityScale = projected.length > 1800 ? 0.72 : (projected.length > 900 ? 0.85 : 1);
-    const baseSize = Math.min(12.5, (4.4 + Math.min(this.zoom, 10) * 0.85) * densityScale);
+    const baseSize = Math.min(16.0, (4.4 + Math.log2(Math.max(1, this.zoom)) * 2.15) * densityScale);
 
     for (const item of projected) {
       const { flight, x, y, z, angle, tail, surface } = item;

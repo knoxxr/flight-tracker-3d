@@ -926,13 +926,13 @@ function bindUI() {
 
   if (mobileZoomInBtn) {
     mobileZoomInBtn.addEventListener('click', () => {
-      globe.targetZoom = Math.min(globe.maxZoom, globe.targetZoom * 1.45);
+      globe.targetZoom = Math.min(globe.maxZoom, globe.targetZoom * 1.65);
     });
   }
 
   if (mobileZoomOutBtn) {
     mobileZoomOutBtn.addEventListener('click', () => {
-      globe.targetZoom = Math.max(globe.minZoom, globe.targetZoom / 1.45);
+      globe.targetZoom = Math.max(globe.minZoom, globe.targetZoom / 1.65);
     });
   }
 
@@ -1001,10 +1001,10 @@ function bindUI() {
   }
 
   document.getElementById('zoom-in-btn').addEventListener('click', () => {
-    globe.targetZoom = Math.min(globe.maxZoom, globe.targetZoom * 1.45);
+    globe.targetZoom = Math.min(globe.maxZoom, globe.targetZoom * 1.65);
   });
   document.getElementById('zoom-out-btn').addEventListener('click', () => {
-    globe.targetZoom = Math.max(globe.minZoom, globe.targetZoom / 1.45);
+    globe.targetZoom = Math.max(globe.minZoom, globe.targetZoom / 1.65);
   });
 
   followBtn.addEventListener('click', () => {
