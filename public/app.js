@@ -1013,7 +1013,7 @@ function handleLivePayload(payload) {
     statusDotEl.className = 'status-dot';
     sourceLabelEl.textContent = formatSourceTitle(state.activeSource, payload.scanProgress);
 
-    if (payload.notice) {
+    if (payload.notice && state.activeSource !== 'adsb-global') {
       liveNoticeEl.textContent = payload.notice;
       liveNoticeEl.classList.remove('hidden');
     } else {

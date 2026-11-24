@@ -92,7 +92,7 @@ body {
 .hud-top-left {
   top: 16px;
   left: 16px;
-  width: 376px;
+  width: min(428px, calc(100vw - 32px));
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
