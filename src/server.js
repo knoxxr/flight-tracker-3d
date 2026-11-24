@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { AIRPORTS } from './airports.js';
 import { LiveAdsbClient } from './opensky.js';
 import { AircraftEnrichmentService } from './enrichment.js';
+import { OceanicEstimator } from './oceanic-estimator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,6 +58,8 @@ function filterFlights(flights, searchQuery) {
   if (!q) return flights;
   return flights.filter((f) =>
     (f.callsign && f.callsign.toLowerCase().includes(q)) ||
+    (f.iataFlight && f.iataFlight.toLowerCase().includes(q)) ||
+    (f.airlineName && f.airlineName.toLowerCase().includes(q)) ||
     (f.icao24 && f.icao24.toLowerCase().includes(q)) ||
     (f.registration && f.registration.toLowerCase().includes(q)) ||
     (f.aircraftType && f.aircraftType.toLowerCase().includes(q)) ||
@@ -68,7 +71,13 @@ function filterFlights(flights, searchQuery) {
 export function createAppServer(options = {}) {
   const adsbClient = options.adsbClient || new LiveAdsbClient();
   const enrichmentService = options.enrichmentService || new AircraftEnrichmentService();
+  const oceanicEstimator = options.oceanicEstimator || new OceanicEstimator({ enrichmentService });
   const trackHistory = new Map();
+
+  // Feed background harvester contacts directly into the oceanic anchor tracker
+  if (adsbClient && typeof adsbClient === 'object') {
+    adsbClient.onFlightsObserved = (flights, nowMs) => oceanicEstimator.observeLiveFlights(flights, nowMs);
+  }
 
   function recordTracks(flights) {
     const now = Math.floor(Date.now() / 1000);
@@ -98,10 +107,24 @@ export function createAppServer(options = {}) {
     const lat = Number.isFinite(Number(params.lat)) ? Number(params.lat) : 37.46;
     const lon = Number.isFinite(Number(params.lon)) ? Number(params.lon) : 126.44;
     const distNm = Number.isFinite(Number(params.dist)) ? Number(params.dist) : 250;
+    const includeEstimated = Boolean(params.includeEstimated);
 
     const result = await adsbClient.fetchLiveFlights({ provider, lat, lon, distNm });
+    let combinedFlights = result.flights;
+    let estimatedCount = 0;
+
     if (result.ok) {
       recordTracks(result.flights);
+      oceanicEstimator.observeLiveFlights(result.flights);
+
+      if (includeEstimated && provider !== 'adsbfi') {
+        const liveSet = new Set(result.flights.map((f) => f.icao24));
+        const estimated = oceanicEstimator.getEstimatedFlights(liveSet);
+        estimatedCount = estimated.length;
+        if (estimatedCount > 0) {
+          combinedFlights = [...result.flights, ...estimated];
+        }
+      }
     }
 
     return {
@@ -113,8 +136,10 @@ export function createAppServer(options = {}) {
       updatedAt: result.updatedAt || null,
       totalRaw: result.totalRaw ?? result.flights.length,
       scanProgress: result.scanProgress || null,
-      count: result.flights.length,
-      flights: result.flights
+      liveCount: result.flights.length,
+      estimatedCount,
+      count: combinedFlights.length,
+      flights: combinedFlights
     };
   }
 
@@ -134,6 +159,7 @@ export function createAppServer(options = {}) {
           mode: 'live-only',
           nodeVersion: process.version,
           upstream: adsbClient.getStatus(),
+          oceanic: oceanicEstimator.getStats(),
           airportsCount: AIRPORTS.length,
           serverTimeUtc: new Date().toISOString()
         });
@@ -149,7 +175,9 @@ export function createAppServer(options = {}) {
         const lon = reqUrl.searchParams.get('lon');
         const dist = reqUrl.searchParams.get('dist');
         const q = reqUrl.searchParams.get('q') || '';
-        const payload = await resolveLiveFlights({ provider, lat, lon, dist });
+        const estParam = reqUrl.searchParams.get('estimated');
+        const includeEstimated = estParam === '1' || estParam === 'true';
+        const payload = await resolveLiveFlights({ provider, lat, lon, dist, includeEstimated });
         const filtered = filterFlights(payload.flights, q);
         return sendJson(res, 200, {
           ...payload,
@@ -162,7 +190,7 @@ export function createAppServer(options = {}) {
       if (pathname.startsWith('/api/flights/')) {
         const icao24 = decodeURIComponent(pathname.slice('/api/flights/'.length)).toLowerCase();
         const provider = reqUrl.searchParams.get('provider') || 'opensky';
-        const payload = await resolveLiveFlights({ provider });
+        const payload = await resolveLiveFlights({ provider, includeEstimated: true });
         const flight = payload.flights.find((f) => f.icao24 === icao24);
         if (!flight) {
           return sendJson(res, 404, { error: 'Flight not found', icao24 });
@@ -185,6 +213,8 @@ export function createAppServer(options = {}) {
         const lat = reqUrl.searchParams.get('lat');
         const lon = reqUrl.searchParams.get('lon');
         const dist = reqUrl.searchParams.get('dist');
+        const estParam = reqUrl.searchParams.get('estimated');
+        const includeEstimated = estParam === '1' || estParam === 'true';
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
@@ -195,7 +225,7 @@ export function createAppServer(options = {}) {
         if (typeof res.flushHeaders === 'function') res.flushHeaders();
         res.write(': connected\n\n');
 
-        const client = { res, provider, lat, lon, dist };
+        const client = { res, provider, lat, lon, dist, includeEstimated };
         sseClients.add(client);
 
         const pushUpdate = async () => {
@@ -205,7 +235,8 @@ export function createAppServer(options = {}) {
               provider: client.provider,
               lat: client.lat,
               lon: client.lon,
-              dist: client.dist
+              dist: client.dist,
+              includeEstimated: client.includeEstimated
             });
             res.write(`event: flights\ndata: ${JSON.stringify(payload)}\n\n`);
           } catch {
@@ -246,6 +277,7 @@ export function createAppServer(options = {}) {
 
   server.on('close', () => {
     if (typeof adsbClient.stop === 'function') adsbClient.stop();
+    if (typeof oceanicEstimator.stop === 'function') oceanicEstimator.stop();
     for (const c of sseClients) {
       if (!c.res.writableEnded) c.res.end();
     }

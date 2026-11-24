@@ -6,6 +6,7 @@ import {
   deadReckonFlight
 } from '../src/opensky.js';
 import { parseAdsbDbResponse, parseHexDbRoute } from '../src/enrichment.js';
+import { OceanicEstimator, advanceAlongGreatCircle } from '../src/oceanic-estimator.js';
 import { resolveAircraftCountry, decodeCallsign } from '../public/aviation-meta.js';
 import { createAppServer } from '../src/server.js';
 
@@ -333,6 +334,127 @@ test('HTTP server serves live-only flights, detail, enrichment, search, airports
     assert.equal(outageData.ok, false);
     assert.equal(outageData.count, 0);
     assert.deepEqual(outageData.flights, []);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('advanceAlongGreatCircle projects oceanic flight accurately along curved North Pacific arc', () => {
+  // Tokyo (35.55, 139.78) -> Los Angeles (33.94, -118.41), advance 4000km
+  const step = advanceAlongGreatCircle(35.55, 139.78, 33.94, -118.41, 4000);
+  assert.equal(step.arrived, false);
+  // Great Circle curves northward into North Pacific (~45-48°N)
+  assert.ok(step.lat > 43, `Expected Great Circle to curve north (>43°N), got ${step.lat}`);
+  assert.ok(step.remainingKm > 4000 && step.remainingKm < 5500);
+});
+
+test('OceanicEstimator projects real coastal flight along resolved route and retires upon arrival or live re-acquisition', () => {
+  const estimator = new OceanicEstimator();
+  const t0 = 1_700_000_000_000;
+  const coastalFlight = {
+    icao24: '71bf99',
+    callsign: 'KAL017',
+    lat: 36.2,
+    lon: 141.5,
+    altitudeFt: 35000,
+    speedKts: 490,
+    speedKmh: 907,
+    heading: 55, // Northeast toward North Pacific Great Circle -> LAX
+    onGround: false
+  };
+
+  estimator.observeLiveFlights([coastalFlight], t0);
+  // Pre-seed resolved route ICN -> LAX
+  const anchor = estimator.anchors.get('71bf99');
+  anchor.routeState = 'resolved';
+  anchor.route = {
+    callsignIata: 'KE17',
+    airline: { name: 'Korean Air' },
+    origin: { iata: 'ICN', lat: 37.4691, lon: 126.4505 },
+    destination: { iata: 'LAX', lat: 33.9416, lon: -118.4085 }
+  };
+
+  // While still in live ADS-B set, must NOT emit duplicate estimated plane
+  assert.equal(estimator.getEstimatedFlights(new Set(['71bf99']), t0 + 3600_000).length, 0);
+
+  // 2 hours after leaving Japanese coastal ADS-B coverage -> projected along Great Circle over Pacific
+  const est = estimator.getEstimatedFlights(new Set(), t0 + 2 * 3600_000);
+  assert.equal(est.length, 1);
+  assert.equal(est[0].estimated, true);
+  assert.equal(est[0].estimateBasis, 'route');
+  assert.equal(est[0].origin, 'ICN');
+  assert.equal(est[0].destination, 'LAX');
+  assert.equal(est[0].iataFlight, 'KE17');
+  assert.ok(est[0].lat > 40, `Expected North Pacific Great Circle arc latitude > 40°N, got ${est[0].lat}`);
+
+  // 12 hours later (past destination arrival) -> retired cleanly
+  const retired = estimator.getEstimatedFlights(new Set(), t0 + 12 * 3600_000);
+  assert.equal(retired.length, 0);
+  estimator.stop();
+});
+
+test('HTTP /api/flights?estimated=1 returns live + estimated oceanic aircraft while ?estimated=0 returns live only', async () => {
+  const liveFlight = {
+    icao24: '71be20',
+    callsign: 'KAL081',
+    lat: 37.46,
+    lon: 126.44,
+    altitudeFt: 35000,
+    speedKts: 480,
+    speedKmh: 889,
+    heading: 42,
+    onGround: false,
+    source: 'opensky'
+  };
+  const mockAdsbClient = {
+    async fetchLiveFlights() {
+      return { ok: true, source: 'opensky', updatedAt: Date.now(), totalRaw: 1, flights: [liveFlight] };
+    },
+    getStatus() {
+      return { authenticated: false };
+    }
+  };
+  const estimator = new OceanicEstimator();
+  const pastMs = Date.now() - 15 * 60 * 1000;
+  estimator.observeLiveFlights([{
+    icao24: '86d5e0',
+    callsign: 'JAL062',
+    lat: 35.8,
+    lon: 141.2,
+    altitudeFt: 36000,
+    speedKts: 500,
+    speedKmh: 926,
+    heading: 58,
+    onGround: false
+  }], pastMs);
+  const anchor = estimator.anchors.get('86d5e0');
+  anchor.routeState = 'resolved';
+  anchor.route = {
+    callsignIata: 'JL62',
+    origin: { iata: 'NRT', lat: 35.772, lon: 140.3929 },
+    destination: { iata: 'LAX', lat: 33.9416, lon: -118.4085 }
+  };
+
+  const server = createAppServer({ adsbClient: mockAdsbClient, oceanicEstimator: estimator });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const liveOnly = await (await fetch(`${baseUrl}/api/flights?estimated=0`)).json();
+    assert.equal(liveOnly.liveCount, 1);
+    assert.equal(liveOnly.estimatedCount, 0);
+    assert.equal(liveOnly.flights.length, 1);
+
+    const withEst = await (await fetch(`${baseUrl}/api/flights?estimated=1`)).json();
+    assert.equal(withEst.liveCount, 1);
+    assert.equal(withEst.estimatedCount, 1);
+    assert.equal(withEst.flights.length, 2);
+    const estPlane = withEst.flights.find((f) => f.estimated);
+    assert.ok(estPlane);
+    assert.equal(estPlane.callsign, 'JAL062');
+    assert.equal(estPlane.origin, 'NRT');
+    assert.equal(estPlane.destination, 'LAX');
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

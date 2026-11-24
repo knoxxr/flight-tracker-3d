@@ -633,6 +633,9 @@ export class LiveAdsbClient {
     for (const f of flights) {
       this.hubFlights.set(f.icao24, { flight: f, fetchedAt: now });
     }
+    if (typeof this.onFlightsObserved === 'function' && flights.length > 0) {
+      this.onFlightsObserved(flights, now);
+    }
     // Retain contacts up to 4 minutes (smoothly dead-reckoned while 96 cells cycle every ~67s)
     for (const [key, entry] of this.hubFlights.entries()) {
       if (now - entry.fetchedAt > 240_000) {

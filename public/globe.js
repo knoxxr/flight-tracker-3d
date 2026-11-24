@@ -1304,16 +1304,21 @@ export class Globe3D {
       const { flight, x, y, z, angle, tail, surface } = item;
       const isSelected = flight.icao24 === this.selectedIcao;
       const isHovered = flight.icao24 === this.hoveredIcao;
+      const isEstimated = Boolean(flight.estimated);
       const depthAlpha = Math.max(0.32, Math.min(1, (z + 0.25) * 1.15));
-      const color = this.options.altitudeColor
-        ? altitudeColor(flight.altitudeFt || 0, isLight)
-        : (isLight ? '#0369a1' : '#38bdf8');
+      const color = isEstimated
+        ? (isLight ? '#9333ea' : '#c084fc')
+        : (this.options.altitudeColor
+          ? altitudeColor(flight.altitudeFt || 0, isLight)
+          : (isLight ? '#0369a1' : '#38bdf8'));
 
       // 3D vertical altitude drop-line to ground shadow
       if (surface && surface.z > 0 && (!dense || isSelected || this.zoom > 2.4)) {
         ctx.strokeStyle = isSelected
           ? 'rgba(251, 191, 36, 0.72)'
-          : (isLight ? 'rgba(15, 23, 42, 0.16)' : 'rgba(148, 210, 245, 0.18)');
+          : isEstimated
+            ? 'rgba(192, 132, 252, 0.28)'
+            : (isLight ? 'rgba(15, 23, 42, 0.16)' : 'rgba(148, 210, 245, 0.18)');
         ctx.lineWidth = isSelected ? 1.2 : 0.75;
         ctx.beginPath();
         ctx.moveTo(surface.x, surface.y);
@@ -1326,14 +1331,17 @@ export class Globe3D {
         ctx.fill();
       }
 
-      // Subtle motion wake trail (skip expensive CanvasGradient allocations when >700 planes visible)
+      // Subtle motion wake trail (dashed violet for estimated oceanic aircraft)
       if (tail) {
         ctx.save();
-        if (!dense || isSelected || isHovered) {
+        if (isEstimated) {
+          ctx.setLineDash([3, 3]);
+        }
+        if (!dense || isSelected || isHovered || isEstimated) {
           const grad = ctx.createLinearGradient(x, y, tail.x, tail.y);
           grad.addColorStop(0, isSelected ? '#fbbf24' : color);
-          grad.addColorStop(1, 'rgba(56, 189, 248, 0)');
-          ctx.globalAlpha = (isSelected ? 0.85 : 0.42) * depthAlpha;
+          grad.addColorStop(1, isEstimated ? 'rgba(192, 132, 252, 0)' : 'rgba(56, 189, 248, 0)');
+          ctx.globalAlpha = (isSelected ? 0.85 : (isEstimated ? 0.52 : 0.42)) * depthAlpha;
           ctx.strokeStyle = grad;
         } else {
           ctx.globalAlpha = 0.22 * depthAlpha;
@@ -1347,11 +1355,24 @@ export class Globe3D {
         ctx.restore();
       }
 
+      // Subtle dashed ring for estimated aircraft when zoomed in
+      if (isEstimated && !isSelected && !isHovered && this.zoom >= 1.55) {
+        ctx.save();
+        ctx.setLineDash([2.5, 2.5]);
+        ctx.strokeStyle = isLight ? 'rgba(147, 51, 234, 0.55)' : 'rgba(192, 132, 252, 0.52)';
+        ctx.lineWidth = 1.0;
+        ctx.beginPath();
+        ctx.arc(x, y, baseSize + 3.5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // Selection reticle pulse
       if (isSelected || isHovered) {
         const pulse = isSelected ? (1 + Math.sin(now * 0.006) * 0.14) : 1;
         ctx.save();
-        ctx.strokeStyle = isSelected ? '#fbbf24' : color;
+        if (isEstimated) ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = isSelected ? (isEstimated ? '#d8b4fe' : '#fbbf24') : color;
         ctx.lineWidth = isSelected ? 1.8 : 1.2;
         ctx.beginPath();
         ctx.arc(x, y, (baseSize + 6.5) * pulse, 0, Math.PI * 2);
@@ -1365,8 +1386,8 @@ export class Globe3D {
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(angle);
-      ctx.globalAlpha = isSelected || isHovered ? 1 : depthAlpha;
-      ctx.fillStyle = isSelected ? '#fef08a' : color;
+      ctx.globalAlpha = isSelected || isHovered ? 1 : (isEstimated ? depthAlpha * 0.78 : depthAlpha);
+      ctx.fillStyle = isSelected ? (isEstimated ? '#e9d5ff' : '#fef08a') : color;
 
       ctx.beginPath();
       if (useFastLod) {
@@ -1397,7 +1418,7 @@ export class Globe3D {
       ctx.fill();
 
       if (isSelected) {
-        ctx.strokeStyle = '#92400e';
+        ctx.strokeStyle = isEstimated ? '#7e22ce' : '#92400e';
         ctx.lineWidth = 0.8;
         ctx.stroke();
       }
@@ -1407,7 +1428,7 @@ export class Globe3D {
       if (isSelected || (this.zoom >= 3.2 && z > 0.35)) {
         ctx.save();
         ctx.font = `${isSelected ? '700' : '600'} 10px ui-monospace, SFMono-Regular, Menlo, monospace`;
-        const baseLabel = flight.callsign || flight.icao24;
+        const baseLabel = (isEstimated ? '~' : '') + (flight.callsign || flight.icao24);
         const label = (!isSelected && this.zoom >= 6.5 && flight.altitudeFt)
           ? `${baseLabel} ${Math.round(flight.altitudeFt / 1000)}k`
           : baseLabel;
@@ -1416,7 +1437,9 @@ export class Globe3D {
         ctx.beginPath();
         ctx.roundRect(x + s + 5, y - 8, tw, 16, 4);
         ctx.fill();
-        ctx.fillStyle = isSelected ? (isLight ? '#b45309' : '#fde047') : (isLight ? '#0f172a' : '#e2e8f0');
+        ctx.fillStyle = isSelected
+          ? (isEstimated ? '#d8b4fe' : (isLight ? '#b45309' : '#fde047'))
+          : (isEstimated ? '#d8b4fe' : (isLight ? '#0f172a' : '#e2e8f0'));
         ctx.textBaseline = 'middle';
         ctx.fillText(label, x + s + 9, y + 0.5);
         ctx.restore();

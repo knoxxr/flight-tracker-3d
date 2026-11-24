@@ -10,6 +10,9 @@ const state = {
   provider: 'opensky', // 'opensky' (global live) | 'adsbfi' (250NM around current view)
   activeSource: 'opensky',
   backendAvailable: false,
+  showEstimated: true,
+  liveCount: 0,
+  estimatedCount: 0,
   rawFlights: [],
   flights: [],
   trackHistory: new Map(),
@@ -85,13 +88,16 @@ const globe = new Globe3D(canvas, {
     const route = enriched?.flightroute;
     const routeStr = route?.origin && route?.destination
       ? `${route.origin.iata || route.origin.icao} → ${route.destination.iata || route.destination.icao}`
-      : (flight.airlineName || csInfo?.airlineKo || country.nameKo);
+      : (flight.origin && flight.destination
+        ? `${flight.origin} → ${flight.destination}`
+        : (flight.airlineName || csInfo?.airlineKo || country.nameKo));
     const typeMeta = flight.aircraftType && flight.aircraftType !== 'ADS-B' ? ` · ${flight.aircraftType}` : '';
+    const estBadge = flight.estimated ? '<span class="est-pill">공해상 추정</span>' : '';
     tooltipEl.innerHTML = `
-      <div><span class="tooltip-callsign">${escapeHtml(titleStr)}</span><span>${escapeHtml(typeMeta)}</span></div>
+      <div><span class="tooltip-callsign">${escapeHtml(titleStr)}</span><span>${escapeHtml(typeMeta)}</span>${estBadge}</div>
       <div class="tooltip-meta">${escapeHtml(routeStr)} · ${formatNumber(flight.altitudeFt)} ft · ${flight.speedKts} kts</div>
     `;
-    tooltipEl.style.left = `${Math.min(window.innerWidth - 250, pos.x + 14)}px`;
+    tooltipEl.style.left = `${Math.min(window.innerWidth - 260, pos.x + 14)}px`;
     tooltipEl.style.top = `${Math.max(12, pos.y - 44)}px`;
     tooltipEl.classList.remove('hidden');
   }
@@ -165,13 +171,19 @@ function recordTrackPoints(flights) {
 
 function applySearchFilter() {
   const q = state.searchQuery.trim().toLowerCase();
+  const base = state.showEstimated
+    ? state.rawFlights
+    : state.rawFlights.filter((f) => !f.estimated);
+
   if (!q) {
-    state.flights = state.rawFlights;
+    state.flights = base;
   } else {
-    state.flights = state.rawFlights.filter((f) =>
+    state.flights = base.filter((f) =>
       (f.callsign && f.callsign.toLowerCase().includes(q)) ||
       (f.iataFlight && f.iataFlight.toLowerCase().includes(q)) ||
       (f.airlineName && f.airlineName.toLowerCase().includes(q)) ||
+      (f.origin && f.origin.toLowerCase().includes(q)) ||
+      (f.destination && f.destination.toLowerCase().includes(q)) ||
       (f.icao24 && f.icao24.toLowerCase().includes(q)) ||
       (f.registration && f.registration.toLowerCase().includes(q)) ||
       (f.aircraftType && f.aircraftType.toLowerCase().includes(q)) ||
@@ -179,7 +191,11 @@ function applySearchFilter() {
       (f.squawk && f.squawk.toLowerCase().includes(q))
     );
   }
-  flightCountEl.textContent = formatNumber(state.flights.length);
+  const estShown = state.flights.reduce((acc, f) => acc + (f.estimated ? 1 : 0), 0);
+  const liveShown = state.flights.length - estShown;
+  flightCountEl.textContent = estShown > 0
+    ? `${formatNumber(liveShown)} (+추정 ${formatNumber(estShown)})`
+    : formatNumber(liveShown);
   if (state.panelMode === 'list') renderFlightList();
   if (state.panelMode === 'detail' && state.selectedIcao) renderFlightDetail();
 }
@@ -240,6 +256,11 @@ function compassDir(deg) {
 }
 
 function getFlightPhase(f) {
+  if (f.estimated) {
+    return f.estimateBasis === 'route'
+      ? { label: '공해상 추정 (노선)', cls: 'estimated' }
+      : { label: '공해상 추정 (항로)', cls: 'estimated' };
+  }
   if (f.squawk === '7700' || f.emergency === 'general') return { label: '비상 (7700)', cls: 'emergency' };
   if (f.squawk === '7600') return { label: '통신두절 (7600)', cls: 'emergency' };
   if (f.squawk === '7500') return { label: '긴급 (7500)', cls: 'emergency' };
@@ -445,13 +466,14 @@ function renderFlightList() {
       const route = enriched?.flightroute;
       const routeStr = route?.origin && route?.destination
         ? `${route.origin.iata || route.origin.icao} → ${route.destination.iata || route.destination.icao}`
-        : null;
+        : (f.origin && f.destination ? `${f.origin} → ${f.destination}` : null);
       const airlineStr = enriched?.flightroute?.airline?.name || f.airlineName || csInfo?.airlineKo || null;
       const subParts = [routeStr, airlineStr, country.nameKo].filter(Boolean);
+      const estTag = f.estimated ? '<span class="est-pill">추정</span>' : '';
       return `
         <button type="button" class="flight-row${selectedClass}" data-icao="${escapeHtml(f.icao24)}">
           <div class="flight-row-main">
-            <span class="flight-row-callsign">${country.flag} ${escapeHtml(callLabel)} <span class="muted">${escapeHtml(f.aircraftType)}</span></span>
+            <span class="flight-row-callsign">${country.flag} ${escapeHtml(callLabel)} <span class="muted">${escapeHtml(f.aircraftType)}</span>${estTag}</span>
             <span class="flight-row-sub">${escapeHtml(subParts.join(' · '))}</span>
           </div>
           <div class="flight-row-metrics">
@@ -548,9 +570,12 @@ function renderFlightDetail() {
 
   // Real Origin -> Destination Route Card (always visible)
   const routeCardEl = document.getElementById('detail-route-card');
-  if (routeInfo?.origin && routeInfo?.destination) {
-    const o = routeInfo.origin;
-    const d = routeInfo.destination;
+  const effectiveOrigin = routeInfo?.origin || (f.origin && f.originCoords ? { iata: f.origin, city: '출발 공항', lat: f.originCoords[0], lon: f.originCoords[1] } : null);
+  const effectiveDest = routeInfo?.destination || (f.destination && f.destCoords ? { iata: f.destination, city: '목적 공항', lat: f.destCoords[0], lon: f.destCoords[1] } : null);
+
+  if (effectiveOrigin && effectiveDest) {
+    const o = effectiveOrigin;
+    const d = effectiveDest;
     routeCardEl.classList.remove('unavailable');
     document.getElementById('detail-origin-iata').textContent = o.iata || o.icao || '---';
     document.getElementById('detail-origin-city').textContent = o.city || o.name || '출발지';
@@ -615,10 +640,18 @@ function renderFlightDetail() {
   }
 
   // Source & Signal Age
-  document.getElementById('detail-source').textContent = f.source === 'adsblol'
-    ? 'adsb.lol Live ADS-B'
-    : (f.source === 'adsbfi' ? 'adsb.fi Open Data' : (f.source === 'flyitaly' ? 'FlyItalyADSB' : 'OpenSky Network'));
-  document.getElementById('detail-contact-age').textContent = formatAge(f.lastContact);
+  if (f.estimated) {
+    document.getElementById('detail-source').textContent = f.estimateBasis === 'route'
+      ? 'Estimated · 실제 노선 대권 추정'
+      : 'Estimated · 마지막 항로 추정';
+    const estAge = f.lastLiveAt ? formatAge(f.lastLiveAt) : formatAge(f.lastContact);
+    document.getElementById('detail-contact-age').textContent = `마지막 수신 ${estAge}`;
+  } else {
+    document.getElementById('detail-source').textContent = f.source === 'adsblol'
+      ? 'adsb.lol Live ADS-B'
+      : (f.source === 'adsbfi' ? 'adsb.fi Open Data' : (f.source === 'flyitaly' ? 'FlyItalyADSB' : 'OpenSky Network'));
+    document.getElementById('detail-contact-age').textContent = formatAge(f.lastContact);
+  }
 
   // Core Telemetry Grid
   const altSub = f.altGeomFt && Math.abs(f.altGeomFt - f.altitudeFt) > 150
@@ -757,7 +790,8 @@ async function fetchBackendOnce() {
   const qs = new URLSearchParams({
     provider: state.provider,
     lat: String(lat),
-    lon: String(lon)
+    lon: String(lon),
+    estimated: state.showEstimated ? '1' : '0'
   });
   try {
     const res = await fetch(`./api/flights?${qs.toString()}`, { cache: 'no-store' });
@@ -948,6 +982,20 @@ function bindUI() {
   bindToggle('toggle-places', 'showPlaces');
   bindToggle('toggle-airports', 'showAirports');
 
+  const estToggleBtn = document.getElementById('toggle-estimated');
+  const legendEstEl = document.getElementById('legend-estimated');
+  if (estToggleBtn) {
+    estToggleBtn.addEventListener('click', () => {
+      state.showEstimated = !state.showEstimated;
+      estToggleBtn.classList.toggle('active', state.showEstimated);
+      if (legendEstEl) legendEstEl.classList.toggle('hidden', !state.showEstimated);
+      applySearchFilter();
+      if (state.backendAvailable) {
+        fetchBackendOnce();
+      }
+    });
+  }
+
   document.getElementById('zoom-in-btn').addEventListener('click', () => {
     globe.targetZoom = Math.min(globe.maxZoom, globe.targetZoom * 1.45);
   });
@@ -993,7 +1041,9 @@ function updateClock() {
   if (state.panelMode === 'detail' && state.selectedIcao) {
     const f = state.rawFlights.find((item) => item.icao24 === state.selectedIcao);
     if (f) {
-      document.getElementById('detail-contact-age').textContent = formatAge(f.lastContact);
+      document.getElementById('detail-contact-age').textContent = f.estimated
+        ? `마지막 수신 ${formatAge(f.lastLiveAt || f.lastContact)}`
+        : formatAge(f.lastContact);
     }
   }
 }
