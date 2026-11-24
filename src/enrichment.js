@@ -4,7 +4,10 @@ const PLANESPOTTERS_BASE = 'https://api.planespotters.net/pub/photos/hex';
 const USER_AGENT = 'AeroGlobe3D/1.5 (+https://github.com/knoxxr/flight-tracker-3d)';
 
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
-const MAX_CACHE_ENTRIES = 1000;
+const MAX_CACHE_ENTRIES = 3000;
+const MAX_CONCURRENT_LOOKUPS = 2;
+const MIN_LOOKUP_SPACING_MS = 350;
+const MAX_PENDING_QUEUE = 24;
 
 /**
  * Normalize an adsbdb.com /v0/aircraft/{hex}?callsign={callsign} response into a clean enrichment object.
@@ -86,6 +89,44 @@ export class AircraftEnrichmentService {
   constructor() {
     this.cache = new Map();
     this.airportCache = new Map();
+    this.inFlight = new Map(); // cacheKey -> Promise
+    this.activeLookups = 0;
+    this.waitQueue = [];
+    this.lastUpstreamAt = 0;
+    this.stats = { cacheHits: 0, dedupHits: 0, upstreamCalls: 0, droppedOverload: 0 };
+  }
+
+  getStats() {
+    return {
+      cacheSize: this.cache.size,
+      airportCacheSize: this.airportCache.size,
+      activeLookups: this.activeLookups,
+      queuedLookups: this.waitQueue.length,
+      ...this.stats
+    };
+  }
+
+  _acquireSlot() {
+    if (this.activeLookups < MAX_CONCURRENT_LOOKUPS) {
+      this.activeLookups++;
+      return Promise.resolve(true);
+    }
+    if (this.waitQueue.length >= MAX_PENDING_QUEUE) {
+      this.stats.droppedOverload++;
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      this.waitQueue.push(resolve);
+    });
+  }
+
+  _releaseSlot() {
+    if (this.waitQueue.length > 0) {
+      const next = this.waitQueue.shift();
+      next(true);
+    } else {
+      this.activeLookups = Math.max(0, this.activeLookups - 1);
+    }
   }
 
   _getCached(key) {
@@ -127,7 +168,7 @@ export class AircraftEnrichmentService {
         lat: typeof ap.latitude === 'number' ? ap.latitude : null,
         lon: typeof ap.longitude === 'number' ? ap.longitude : null
       };
-      if (this.airportCache.size < 2000) this.airportCache.set(code, normalized);
+      if (this.airportCache.size < 2500) this.airportCache.set(code, normalized);
       return normalized;
     } catch {
       return { iata: code, icao: code, name: code, city: null, country: null, countryIso: null, lat: null, lon: null };
@@ -143,11 +184,41 @@ export class AircraftEnrichmentService {
 
     const cacheKey = `${cleanHex}:${cleanCall}`;
     const cached = this._getCached(cacheKey);
-    if (cached) return { ...cached, cached: true };
+    if (cached) {
+      this.stats.cacheHits++;
+      return { ...cached, cached: true };
+    }
 
-    let aircraft = null;
-    let flightroute = null;
-    let photo = null;
+    if (this.inFlight.has(cacheKey)) {
+      this.stats.dedupHits++;
+      return this.inFlight.get(cacheKey);
+    }
+
+    const task = this._performLookup(cleanHex, cleanCall, cacheKey).finally(() => {
+      this.inFlight.delete(cacheKey);
+    });
+    this.inFlight.set(cacheKey, task);
+    return task;
+  }
+
+  async _performLookup(cleanHex, cleanCall, cacheKey) {
+    const acquired = await this._acquireSlot();
+    if (!acquired) {
+      return { ok: false, rateLimited: true, icao24: cleanHex.toLowerCase(), aircraft: null, flightroute: null, photo: null };
+    }
+
+    try {
+      // Polite spacing between upstream enrichment requests under load
+      const gap = Date.now() - this.lastUpstreamAt;
+      if (gap < MIN_LOOKUP_SPACING_MS) {
+        await new Promise((r) => setTimeout(r, MIN_LOOKUP_SPACING_MS - gap));
+      }
+      this.lastUpstreamAt = Date.now();
+      this.stats.upstreamCalls++;
+
+      let aircraft = null;
+      let flightroute = null;
+      let photo = null;
 
     // 1) Primary: adsbdb.com for aircraft specs, owner, photo, AND live callsign route
     try {
@@ -285,16 +356,19 @@ export class AircraftEnrichmentService {
       }
     }
 
-    const result = {
-      ok: Boolean(aircraft || flightroute || photo),
-      icao24: cleanHex.toLowerCase(),
-      callsign: cleanCall || null,
-      aircraft,
-      flightroute,
-      photo
-    };
+      const result = {
+        ok: Boolean(aircraft || flightroute || photo),
+        icao24: cleanHex.toLowerCase(),
+        callsign: cleanCall || null,
+        aircraft,
+        flightroute,
+        photo
+      };
 
-    this._setCached(cacheKey, result);
-    return result;
+      this._setCached(cacheKey, result);
+      return result;
+    } finally {
+      this._releaseSlot();
+    }
   }
 }

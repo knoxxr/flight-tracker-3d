@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { AIRPORTS } from './airports.js';
 import { LiveAdsbClient } from './opensky.js';
@@ -20,6 +21,8 @@ const MIME_TYPES = {
   '.png': 'image/png',
   '.ico': 'image/x-icon'
 };
+
+const COMPRESSIBLE_EXTS = new Set(['.html', '.css', '.js', '.json', '.svg']);
 
 function loadDotEnv(envPath) {
   try {
@@ -43,12 +46,83 @@ function loadDotEnv(envPath) {
 
 loadDotEnv(path.resolve(__dirname, '../.env'));
 
-function sendJson(res, status, payload) {
-  const body = JSON.stringify(payload);
-  res.writeHead(status, {
+function clientAcceptsGzip(req) {
+  const enc = String(req?.headers?.['accept-encoding'] || '');
+  return /\bgzip\b/i.test(enc);
+}
+
+function getClientIp(req) {
+  const xff = req?.headers?.['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.trim()) {
+    return xff.split(',')[0].trim();
+  }
+  return req?.socket?.remoteAddress || 'unknown';
+}
+
+/**
+ * Lightweight in-memory fixed-window per-IP rate limiter (zero external dependencies).
+ */
+export function createIpRateLimiter({ windowMs = 60_000, max = 60 } = {}) {
+  const buckets = new Map();
+  let lastPrune = Date.now();
+
+  return function check(ip, nowMs = Date.now()) {
+    if (nowMs - lastPrune > windowMs * 2) {
+      for (const [k, v] of buckets.entries()) {
+        if (nowMs - v.start >= windowMs) buckets.delete(k);
+      }
+      lastPrune = nowMs;
+    }
+
+    let b = buckets.get(ip);
+    if (!b || nowMs - b.start >= windowMs) {
+      b = { start: nowMs, count: 1 };
+      buckets.set(ip, b);
+      return { allowed: true, remaining: Math.max(0, max - 1) };
+    }
+    b.count++;
+    if (b.count > max) {
+      const retryAfterSec = Math.max(1, Math.ceil((windowMs - (nowMs - b.start)) / 1000));
+      return { allowed: false, remaining: 0, retryAfterSec };
+    }
+    return { allowed: true, remaining: Math.max(0, max - b.count) };
+  };
+}
+
+function sendJson(req, res, status, payload, extraHeaders = {}) {
+  const jsonBuf = Buffer.from(JSON.stringify(payload), 'utf8');
+  const headers = {
     'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
-  });
+    'Cache-Control': 'no-store',
+    Vary: 'Accept-Encoding',
+    ...extraHeaders
+  };
+
+  if (jsonBuf.length >= 1024 && clientAcceptsGzip(req)) {
+    const gz = zlib.gzipSync(jsonBuf, { level: 6 });
+    headers['Content-Encoding'] = 'gzip';
+    headers['Content-Length'] = gz.length;
+    res.writeHead(status, headers);
+    res.end(gz);
+    return;
+  }
+
+  headers['Content-Length'] = jsonBuf.length;
+  res.writeHead(status, headers);
+  res.end(jsonBuf);
+}
+
+function sendPreEncoded(req, res, status, entry) {
+  const useGzip = entry.gzipBuf && clientAcceptsGzip(req);
+  const body = useGzip ? entry.gzipBuf : entry.jsonBuf;
+  const headers = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'public, max-age=2',
+    Vary: 'Accept-Encoding',
+    'Content-Length': body.length
+  };
+  if (useGzip) headers['Content-Encoding'] = 'gzip';
+  res.writeHead(status, headers);
   res.end(body);
 }
 
@@ -60,6 +134,8 @@ function filterFlights(flights, searchQuery) {
     (f.callsign && f.callsign.toLowerCase().includes(q)) ||
     (f.iataFlight && f.iataFlight.toLowerCase().includes(q)) ||
     (f.airlineName && f.airlineName.toLowerCase().includes(q)) ||
+    (f.origin && f.origin.toLowerCase().includes(q)) ||
+    (f.destination && f.destination.toLowerCase().includes(q)) ||
     (f.icao24 && f.icao24.toLowerCase().includes(q)) ||
     (f.registration && f.registration.toLowerCase().includes(q)) ||
     (f.aircraftType && f.aircraftType.toLowerCase().includes(q)) ||
@@ -73,6 +149,23 @@ export function createAppServer(options = {}) {
   const enrichmentService = options.enrichmentService || new AircraftEnrichmentService();
   const oceanicEstimator = options.oceanicEstimator || new OceanicEstimator({ enrichmentService });
   const trackHistory = new Map();
+
+  // Production-grade caching & per-IP rate limits (configurable for tests)
+  const snapshotCacheMs = options.snapshotCacheMs ?? (options.adsbClient ? 0 : 2500);
+  const flightsLimiter = createIpRateLimiter({
+    windowMs: 60_000,
+    max: options.flightsRateLimitPerMin ?? 60
+  });
+  const enrichLimiter = createIpRateLimiter({
+    windowMs: 60_000,
+    max: options.enrichRateLimitPerMin ?? 30
+  });
+
+  // Pre-serialized + pre-gzipped response cache for /api/flights (eliminates redundant JSON.stringify + gzip under load)
+  const snapshotCache = new Map(); // cacheKey -> { at, payload, jsonBuf, gzipBuf }
+  const inFlightSnapshots = new Map(); // cacheKey -> Promise
+  const staticGzipCache = new Map(); // fullPath -> { mtimeMs, gzBuf }
+  const serverStats = { flightsRequests: 0, snapshotCacheHits: 0, rateLimitedCount: 0 };
 
   // Feed background harvester contacts directly into the oceanic anchor tracker
   if (adsbClient && typeof adsbClient === 'object') {
@@ -139,8 +232,41 @@ export function createAppServer(options = {}) {
       liveCount: result.flights.length,
       estimatedCount,
       count: combinedFlights.length,
+      totalCount: combinedFlights.length,
       flights: combinedFlights
     };
+  }
+
+  async function getCachedGlobalSnapshot(params) {
+    const cacheKey = `${params.provider}:${params.includeEstimated ? 1 : 0}`;
+    const now = Date.now();
+    const hit = snapshotCache.get(cacheKey);
+    if (snapshotCacheMs > 0 && hit && now - hit.at < snapshotCacheMs) {
+      serverStats.snapshotCacheHits++;
+      return hit;
+    }
+
+    if (inFlightSnapshots.has(cacheKey)) {
+      serverStats.snapshotCacheHits++;
+      return inFlightSnapshots.get(cacheKey);
+    }
+
+    const work = (async () => {
+      const payload = await resolveLiveFlights(params);
+      const jsonBuf = Buffer.from(JSON.stringify(payload), 'utf8');
+      const gzipBuf = jsonBuf.length >= 1024 ? zlib.gzipSync(jsonBuf, { level: 5 }) : null;
+      const entry = { at: Date.now(), payload, jsonBuf, gzipBuf };
+      // Only cache healthy snapshots so outage states & recovery stay instantaneous
+      if (snapshotCacheMs > 0 && payload.ok) {
+        snapshotCache.set(cacheKey, entry);
+      }
+      return entry;
+    })().finally(() => {
+      inFlightSnapshots.delete(cacheKey);
+    });
+
+    inFlightSnapshots.set(cacheKey, work);
+    return work;
   }
 
   const sseClients = new Set();
@@ -149,27 +275,43 @@ export function createAppServer(options = {}) {
     try {
       const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const pathname = reqUrl.pathname;
+      const ip = getClientIp(req);
 
       if (pathname === '/api/health') {
-        return sendJson(res, 200, { status: 'ok', mode: 'live-only', uptimeSec: Math.round(process.uptime()) });
+        return sendJson(req, res, 200, { status: 'ok', mode: 'live-only', uptimeSec: Math.round(process.uptime()) });
       }
 
       if (pathname === '/api/status' || pathname === '/api/debug') {
-        return sendJson(res, 200, {
+        return sendJson(req, res, 200, {
           mode: 'live-only',
           nodeVersion: process.version,
           upstream: adsbClient.getStatus(),
           oceanic: oceanicEstimator.getStats(),
+          enrichment: typeof enrichmentService.getStats === 'function' ? enrichmentService.getStats() : null,
+          server: { ...serverStats, snapshotCacheMs },
           airportsCount: AIRPORTS.length,
           serverTimeUtc: new Date().toISOString()
         });
       }
 
       if (pathname === '/api/airports') {
-        return sendJson(res, 200, { count: AIRPORTS.length, airports: AIRPORTS });
+        return sendJson(req, res, 200, { count: AIRPORTS.length, airports: AIRPORTS }, { 'Cache-Control': 'public, max-age=3600' });
       }
 
       if (pathname === '/api/flights') {
+        serverStats.flightsRequests++;
+        const rl = flightsLimiter(ip);
+        if (!rl.allowed) {
+          serverStats.rateLimitedCount++;
+          return sendJson(
+            req,
+            res,
+            429,
+            { ok: false, error: '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.', count: 0, flights: [] },
+            { 'Retry-After': String(rl.retryAfterSec) }
+          );
+        }
+
         const provider = reqUrl.searchParams.get('provider') || 'opensky';
         const lat = reqUrl.searchParams.get('lat');
         const lon = reqUrl.searchParams.get('lon');
@@ -177,9 +319,16 @@ export function createAppServer(options = {}) {
         const q = reqUrl.searchParams.get('q') || '';
         const estParam = reqUrl.searchParams.get('estimated');
         const includeEstimated = estParam === '1' || estParam === 'true';
+
+        // Fast path: pre-serialized + pre-gzipped global snapshot shared across all concurrent visitors!
+        if (!q && provider !== 'adsbfi') {
+          const entry = await getCachedGlobalSnapshot({ provider, lat, lon, dist, includeEstimated });
+          return sendPreEncoded(req, res, 200, entry);
+        }
+
         const payload = await resolveLiveFlights({ provider, lat, lon, dist, includeEstimated });
         const filtered = filterFlights(payload.flights, q);
-        return sendJson(res, 200, {
+        return sendJson(req, res, 200, {
           ...payload,
           count: filtered.length,
           totalCount: payload.flights.length,
@@ -193,19 +342,30 @@ export function createAppServer(options = {}) {
         const payload = await resolveLiveFlights({ provider, includeEstimated: true });
         const flight = payload.flights.find((f) => f.icao24 === icao24);
         if (!flight) {
-          return sendJson(res, 404, { error: 'Flight not found', icao24 });
+          return sendJson(req, res, 404, { error: 'Flight not found', icao24 });
         }
-        return sendJson(res, 200, {
+        return sendJson(req, res, 200, {
           flight,
           track: trackHistory.get(icao24) || []
         });
       }
 
       if (pathname.startsWith('/api/enrich/')) {
+        const rl = enrichLimiter(ip);
+        if (!rl.allowed) {
+          serverStats.rateLimitedCount++;
+          return sendJson(
+            req,
+            res,
+            429,
+            { ok: false, rateLimited: true, error: '상세 조회 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.' },
+            { 'Retry-After': String(rl.retryAfterSec) }
+          );
+        }
         const icao24 = decodeURIComponent(pathname.slice('/api/enrich/'.length)).toLowerCase();
         const callsign = reqUrl.searchParams.get('callsign') || '';
         const info = await enrichmentService.lookup(icao24, callsign);
-        return sendJson(res, 200, info);
+        return sendJson(req, res, 200, info, { 'Cache-Control': 'public, max-age=300' });
       }
 
       if (pathname === '/api/stream') {
@@ -245,7 +405,7 @@ export function createAppServer(options = {}) {
         };
 
         await pushUpdate();
-        const timer = setInterval(pushUpdate, 5000);
+        const timer = setInterval(pushUpdate, 6000);
 
         req.on('close', () => {
           clearInterval(timer);
@@ -254,7 +414,7 @@ export function createAppServer(options = {}) {
         return;
       }
 
-      // Static file server from public/
+      // Static file server from public/ (with in-memory Gzip cache for JS/CSS/HTML/world-geo.json)
       const relPath = pathname === '/' ? '/index.html' : pathname;
       const safePath = path.normalize(relPath).replace(/^(\.\.(\/|\\|$))+/, '');
       const fullPath = path.join(PUBLIC_DIR, safePath);
@@ -265,13 +425,37 @@ export function createAppServer(options = {}) {
       }
 
       const ext = path.extname(fullPath).toLowerCase();
+      const cacheHeader = ext === '.html'
+        ? 'no-cache'
+        : (safePath === '/world-geo.json' ? 'public, max-age=86400' : 'public, max-age=300');
+
+      if (COMPRESSIBLE_EXTS.has(ext) && clientAcceptsGzip(req)) {
+        const stat = fs.statSync(fullPath);
+        let cached = staticGzipCache.get(fullPath);
+        if (!cached || cached.mtimeMs !== stat.mtimeMs) {
+          const raw = fs.readFileSync(fullPath);
+          const gzBuf = zlib.gzipSync(raw, { level: 6 });
+          cached = { mtimeMs: stat.mtimeMs, gzBuf };
+          staticGzipCache.set(fullPath, cached);
+        }
+        res.writeHead(200, {
+          'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+          'Content-Encoding': 'gzip',
+          'Content-Length': cached.gzBuf.length,
+          Vary: 'Accept-Encoding',
+          'Cache-Control': cacheHeader
+        });
+        return res.end(cached.gzBuf);
+      }
+
       res.writeHead(200, {
         'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=300'
+        Vary: 'Accept-Encoding',
+        'Cache-Control': cacheHeader
       });
       fs.createReadStream(fullPath).pipe(res);
     } catch (err) {
-      sendJson(res, 500, { error: 'Internal server error', message: err.message });
+      sendJson(req, res, 500, { error: 'Internal server error', message: err.message });
     }
   });
 
@@ -291,10 +475,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const PORT = Number(process.env.PORT || 3000);
   const HOST = process.env.HOST || '0.0.0.0';
   const adsbClient = new LiveAdsbClient();
-  const server = createAppServer({ adsbClient });
+  const server = createAppServer({ adsbClient, snapshotCacheMs: 3000 });
   server.listen(PORT, HOST, () => {
-    console.log(`[AeroGlobe3D] Live-Only ADS-B server listening on http://${HOST}:${PORT}`);
-    // Pre-warm the 96-cell global grid immediately on boot
+    console.log(`[AeroGlobe3D] Public-ready Live ADS-B server listening on http://${HOST}:${PORT}`);
+    // Pre-warm the 98-cell global grid immediately on boot
     adsbClient.startWarmup();
   });
 }

@@ -8,7 +8,7 @@ import {
 import { parseAdsbDbResponse, parseHexDbRoute } from '../src/enrichment.js';
 import { OceanicEstimator, advanceAlongGreatCircle } from '../src/oceanic-estimator.js';
 import { resolveAircraftCountry, decodeCallsign, classifyAircraftIcon } from '../public/aviation-meta.js';
-import { createAppServer } from '../src/server.js';
+import { createAppServer, createIpRateLimiter } from '../src/server.js';
 
 test('classifyAircraftIcon distinguishes aircraft by size and purpose', () => {
   assert.equal(classifyAircraftIcon({ aircraftType: 'A388', callsign: 'UAE322' }).kind, 'super_heavy');
@@ -468,6 +468,80 @@ test('HTTP /api/flights?estimated=1 returns live + estimated oceanic aircraft wh
     assert.equal(estPlane.callsign, 'JAL062');
     assert.equal(estPlane.origin, 'NRT');
     assert.equal(estPlane.destination, 'LAX');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('createIpRateLimiter enforces per-IP limits and resets after window', () => {
+  const limit = createIpRateLimiter({ windowMs: 10_000, max: 2 });
+  assert.equal(limit('1.2.3.4', 1000).allowed, true);
+  assert.equal(limit('1.2.3.4', 2000).allowed, true);
+  const blocked = limit('1.2.3.4', 3000);
+  assert.equal(blocked.allowed, false);
+  assert.ok(blocked.retryAfterSec >= 1);
+  // Different IP unaffected
+  assert.equal(limit('5.6.7.8', 3000).allowed, true);
+  // Resets cleanly after window elapses
+  assert.equal(limit('1.2.3.4', 12000).allowed, true);
+});
+
+test('HTTP server coalesces concurrent /api/flights requests via snapshot cache, compresses with Gzip, and enforces per-IP rate limits', async () => {
+  let upstreamCalls = 0;
+  const bigFlights = Array.from({ length: 40 }, (_, i) => ({
+    icao24: `71be${String(i).padStart(2, '0')}`,
+    callsign: `KAL${100 + i}`,
+    lat: 37.4 + i * 0.01,
+    lon: 126.4 + i * 0.01,
+    altitudeFt: 35000,
+    speedKts: 480,
+    heading: 90,
+    onGround: false,
+    source: 'adsblol'
+  }));
+  const mockAdsbClient = {
+    async fetchLiveFlights() {
+      upstreamCalls++;
+      return { ok: true, source: 'adsb-global', updatedAt: Date.now(), totalRaw: bigFlights.length, flights: bigFlights };
+    },
+    getStatus() {
+      return { authenticated: false };
+    }
+  };
+
+  const server = createAppServer({
+    adsbClient: mockAdsbClient,
+    snapshotCacheMs: 3000,
+    flightsRateLimitPerMin: 4,
+    enrichRateLimitPerMin: 2
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    // 3 rapid requests from different IPs hit the shared 3s snapshot cache -> only 1 upstream call!
+    const [r1, r2, r3] = await Promise.all([
+      fetch(`${baseUrl}/api/flights?estimated=1`, { headers: { 'X-Forwarded-For': '10.0.0.1', 'Accept-Encoding': 'gzip' } }),
+      fetch(`${baseUrl}/api/flights?estimated=1`, { headers: { 'X-Forwarded-For': '10.0.0.2', 'Accept-Encoding': 'gzip' } }),
+      fetch(`${baseUrl}/api/flights?estimated=1`, { headers: { 'X-Forwarded-For': '10.0.0.3', 'Accept-Encoding': 'gzip' } })
+    ]);
+    assert.equal(r1.status, 200);
+    assert.equal(r2.status, 200);
+    assert.equal(r3.status, 200);
+    assert.equal(r1.headers.get('content-encoding'), 'gzip');
+    const j1 = await r1.json();
+    assert.equal(j1.flights.length, 40);
+    assert.equal(upstreamCalls, 1, 'Expected all concurrent/cached visitors to share 1 upstream call');
+
+    // Per-IP rate limit triggers HTTP 429 on 5th request from same IP
+    for (let i = 0; i < 4; i++) {
+      const r = await fetch(`${baseUrl}/api/flights?estimated=1`, { headers: { 'X-Forwarded-For': '9.9.9.9' } });
+      assert.equal(r.status, 200);
+    }
+    const blocked = await fetch(`${baseUrl}/api/flights?estimated=1`, { headers: { 'X-Forwarded-For': '9.9.9.9' } });
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get('retry-after')) >= 1);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

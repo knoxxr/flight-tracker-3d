@@ -357,15 +357,24 @@ export class LiveAdsbClient {
     this.lastFlyItalyFetchMs = 0;
     this.lastFlyItalySuccessMs = 0;
 
-    // 96-cell seamless global grid aggregator (adsb.fi + adsb.lol) + priority camera queue
+    // 98-cell seamless global grid aggregator (adsb.fi + adsb.lol) + priority camera queue
     this.hubFlights = new Map(); // icao24 -> { flight, fetchedAt }
     this.scannedCells = new Set();
     this.hubCursor = 0;
     this.priorityQueue = [];
     this.harvesterTimer = null;
     this.harvesterBusy = false;
+    this.inFlightBoot = null;
     this.lastClientActivityMs = Date.now();
     this.lastFocusQuery = { lat: null, lon: null, at: 0 };
+
+    // Strict global upstream rate guard (<= 1 req / 1.2s per provider regardless of visitor count)
+    this.minProviderIntervalMs = Number(options.minProviderIntervalMs || 1200);
+    this.lastAdsbFiCallMs = 0;
+    this.lastAdsbLolCallMs = 0;
+    this.adsbFiBackoffUntilMs = 0;
+    this.adsbLolBackoffUntilMs = 0;
+    this.upstreamCallCounts = { opensky: 0, flyitaly: 0, adsbfi: 0, adsblol: 0 };
 
     this.diagnostics = {
       opensky: { status: 'idle', count: 0, error: null, at: null },
@@ -564,6 +573,16 @@ export class LiveAdsbClient {
   }
 
   async fetchAdsbFi(lat = 37.46, lon = 126.44, distNm = 250) {
+    const now = Date.now();
+    if (now < this.adsbFiBackoffUntilMs) {
+      return { ok: false, skipped: true, source: 'adsbfi', error: 'adsb.fi 429 백오프 대기 중', flights: [] };
+    }
+    if (now - this.lastAdsbFiCallMs < this.minProviderIntervalMs) {
+      return { ok: false, skipped: true, source: 'adsbfi', error: 'adsb.fi 전역 속도 제한', flights: [] };
+    }
+    this.lastAdsbFiCallMs = now;
+    this.upstreamCallCounts.adsbfi++;
+
     try {
       const clampedDist = Math.max(10, Math.min(250, Math.round(distNm)));
       const url = `${ADSBFI_BASE_URL}/lat/${Number(lat).toFixed(3)}/lon/${Number(lon).toFixed(3)}/dist/${clampedDist}`;
@@ -574,6 +593,9 @@ export class LiveAdsbClient {
 
       if (!res.ok) {
         const msg = `adsb.fi HTTP ${res.status}`;
+        if (res.status === 429 || res.status === 403) {
+          this.adsbFiBackoffUntilMs = Date.now() + 60_000;
+        }
         this.diagnostics.adsbfi = { status: `HTTP ${res.status}`, count: 0, error: msg, at: new Date().toISOString() };
         return { ok: false, source: 'adsbfi', error: msg, flights: [] };
       }
@@ -597,6 +619,16 @@ export class LiveAdsbClient {
   }
 
   async fetchAdsbLol(lat = 37.46, lon = 126.44, distNm = 250) {
+    const now = Date.now();
+    if (now < this.adsbLolBackoffUntilMs) {
+      return { ok: false, skipped: true, source: 'adsblol', error: 'adsb.lol 429 백오프 대기 중', flights: [] };
+    }
+    if (now - this.lastAdsbLolCallMs < this.minProviderIntervalMs) {
+      return { ok: false, skipped: true, source: 'adsblol', error: 'adsb.lol 전역 속도 제한', flights: [] };
+    }
+    this.lastAdsbLolCallMs = now;
+    this.upstreamCallCounts.adsblol++;
+
     try {
       const clampedDist = Math.max(10, Math.min(250, Math.round(distNm)));
       const url = `${ADSBLOL_BASE_URL}/point/${Number(lat).toFixed(3)}/${Number(lon).toFixed(3)}/${clampedDist}`;
@@ -607,6 +639,9 @@ export class LiveAdsbClient {
 
       if (!res.ok) {
         const msg = `adsb.lol HTTP ${res.status}`;
+        if (res.status === 429 || res.status === 403) {
+          this.adsbLolBackoffUntilMs = Date.now() + 60_000;
+        }
         this.diagnostics.adsblol = { status: `HTTP ${res.status}`, count: 0, error: msg, at: new Date().toISOString() };
         return { ok: false, source: 'adsblol', error: msg, flights: [] };
       }
@@ -637,7 +672,7 @@ export class LiveAdsbClient {
     if (typeof this.onFlightsObserved === 'function' && flights.length > 0) {
       this.onFlightsObserved(flights, now);
     }
-    // Retain contacts up to 4 minutes (smoothly dead-reckoned while 96 cells cycle every ~67s)
+    // Retain contacts up to 4 minutes (smoothly dead-reckoned while 98 cells cycle every ~69s)
     for (const [key, entry] of this.hubFlights.entries()) {
       if (now - entry.fetchedAt > 240_000) {
         this.hubFlights.delete(key);
@@ -657,11 +692,27 @@ export class LiveAdsbClient {
     return this.sampleEvenly(list, this.maxFlights);
   }
 
+  _filterNearbyCached(lat, lon, distNm = 250) {
+    const maxKm = Math.max(10, Math.min(250, distNm)) * 1.852;
+    const deg2rad = Math.PI / 180;
+    const snap = this._getHubSnapshot();
+    const out = [];
+    for (let i = 0; i < snap.length; i++) {
+      const f = snap[i];
+      const dLat = (f.lat - lat) * deg2rad;
+      const dLon = (f.lon - lon) * deg2rad;
+      const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat * deg2rad) * Math.cos(f.lat * deg2rad) * Math.sin(dLon / 2) ** 2;
+      const km = 2 * 6371.0088 * Math.asin(Math.min(1, Math.sqrt(a)));
+      if (km <= maxKm) out.push(f);
+    }
+    return out;
+  }
+
   _ensureHubHarvesterRunning() {
     if (this.harvesterTimer) return;
-    // Dual-provider parallel sweep across 96 global cells:
-    // Queries 1 cell on adsb.fi + 1 different cell on adsb.lol every 1.4s (~0.7 req/s each, well under 1 req/s limits)
-    // Completes a full 96-cell planetary sweep in ~67 seconds!
+    // Dual-provider parallel sweep across 98 global cells:
+    // Strictly <= 0.7 req/s per provider regardless of concurrent visitor count!
     this.harvesterTimer = setInterval(async () => {
       if (Date.now() - this.lastClientActivityMs > 180_000 && this.scannedCells.size >= GLOBAL_LIVE_HUBS.length) {
         clearInterval(this.harvesterTimer);
@@ -700,52 +751,73 @@ export class LiveAdsbClient {
       } finally {
         this.harvesterBusy = false;
       }
-    }, 1400);
+    }, 1450);
     if (typeof this.harvesterTimer.unref === 'function') {
       this.harvesterTimer.unref();
     }
   }
 
-  _enqueueFocusAreaIfMoved(lat, lon) {
+  _enqueueFocusAreaThrottled(lat, lon) {
     const now = Date.now();
+    // Global throttle: at most 1 priority cell enqueue every 5s across ALL visitors
+    if (now - this.lastFocusQuery.at < 5_000) return false;
     const prev = this.lastFocusQuery;
-    const movedEnough = prev.lat === null || Math.abs(lat - prev.lat) > 2.0 || Math.abs(lon - prev.lon) > 2.0;
-    if (!movedEnough && now - prev.at < 10_000) return false;
+    const movedEnough = prev.lat === null || Math.abs(lat - prev.lat) > 2.5 || Math.abs(lon - prev.lon) > 2.5;
+    if (!movedEnough && now - prev.at < 20_000) return false;
 
     this.lastFocusQuery = { lat, lon, at: now };
     if (this.priorityQueue.length < 4) {
-      this.priorityQueue.unshift({ lat, lon, _priority: true });
+      this.priorityQueue.push({ lat, lon, _priority: true });
     }
     return true;
+  }
+
+  async _runSharedColdBoot(lat, lon) {
+    if (this.inFlightBoot) return this.inFlightBoot;
+    this.inFlightBoot = (async () => {
+      const [rFocus, rExtra] = await Promise.all([
+        this.fetchAdsbFi(lat, lon, 250),
+        this.fetchAdsbLol(50.5, 6.0, 250)
+      ]);
+      if (rFocus.ok) this._mergeIntoHubCache(rFocus.flights);
+      if (rExtra.ok) this._mergeIntoHubCache(rExtra.flights);
+    })().finally(() => {
+      this.inFlightBoot = null;
+    });
+    return this.inFlightBoot;
   }
 
   async fetchLiveFlights({ provider = 'opensky', lat = 37.46, lon = 126.44, distNm = 250 } = {}) {
     this.lastClientActivityMs = Date.now();
 
     if (provider === 'adsbfi') {
-      const [fi, lol] = await Promise.all([
-        this.fetchAdsbFi(lat, lon, distNm),
-        this.fetchAdsbLol(lat, lon, distNm)
-      ]);
-      const merged = new Map();
-      if (lol.ok) for (const f of lol.flights) merged.set(f.icao24, f);
-      if (fi.ok) for (const f of fi.flights) merged.set(f.icao24, f);
-      const combined = Array.from(merged.values());
+      // Public-launch safe: serve immediately from shared cache + politely queue priority refresh
+      this._ensureHubHarvesterRunning();
+      this._enqueueFocusAreaThrottled(lat, lon);
+      let nearby = this._filterNearbyCached(lat, lon, distNm);
+      if (nearby.length === 0) {
+        const [fi, lol] = await Promise.all([
+          this.fetchAdsbFi(lat, lon, distNm),
+          this.fetchAdsbLol(lat, lon, distNm)
+        ]);
+        if (lol.ok) this._mergeIntoHubCache(lol.flights);
+        if (fi.ok) this._mergeIntoHubCache(fi.flights);
+        nearby = this._filterNearbyCached(lat, lon, distNm);
+      }
 
-      if (fi.ok || lol.ok) {
-        this._mergeIntoHubCache(combined);
+      if (nearby.length > 0 || this.hubFlights.size > 0) {
         return {
           ok: true,
-          source: fi.ok && lol.ok ? 'adsb-local' : (fi.ok ? 'adsbfi' : 'adsblol'),
+          source: 'adsb-local',
           updatedAt: Date.now(),
-          totalRaw: combined.length,
-          flights: combined
+          totalRaw: nearby.length,
+          flights: nearby
         };
       }
       return {
         ok: false,
         source: 'adsbfi',
-        error: `${fi.error || 'adsb.fi 실패'} / ${lol.error || 'adsb.lol 실패'}`,
+        error: `${this.diagnostics.adsbfi.error || 'adsb.fi 대기 중'} / ${this.diagnostics.adsblol.error || 'adsb.lol 대기 중'}`,
         flights: []
       };
     }
@@ -756,23 +828,17 @@ export class LiveAdsbClient {
       if (fiGlobal.ok && fiGlobal.flights.length > 0) return fiGlobal;
     }
 
-    // Global mode priority 2: OpenSky Network single-request global (up to 15,000 flights — ALL oceans & small cities)
+    // Global mode priority 2: OpenSky Network single-request global (shared 20s cache)
     const globalRes = await this.fetchOpenSky();
     if (globalRes.ok && globalRes.flights.length > 0) {
       return globalRes;
     }
 
-    // Global mode priority 3: 96-cell seamless planetary grid (adsb.fi + adsb.lol) + live camera focus
+    // Global mode priority 3: 98-cell shared planetary cache (ZERO per-visitor upstream spikes!)
     this._ensureHubHarvesterRunning();
-    const moved = this._enqueueFocusAreaIfMoved(lat, lon);
-    if (this.hubFlights.size === 0 || moved) {
-      // Immediately fetch the user's current camera center + one major hub so response is instant
-      const [rFocus, rExtra] = await Promise.all([
-        this.fetchAdsbFi(lat, lon, 250),
-        this.hubFlights.size < 200 ? this.fetchAdsbLol(50.5, 6.0, 250) : this.fetchAdsbLol(lat, lon, 250)
-      ]);
-      if (rFocus.ok) this._mergeIntoHubCache(rFocus.flights);
-      if (rExtra.ok) this._mergeIntoHubCache(rExtra.flights);
+    this._enqueueFocusAreaThrottled(lat, lon);
+    if (this.hubFlights.size === 0) {
+      await this._runSharedColdBoot(lat, lon);
     }
 
     const hubList = this._getHubSnapshot();
@@ -827,7 +893,12 @@ export class LiveAdsbClient {
         completed: this.scannedCells.size,
         total: GLOBAL_LIVE_HUBS.length
       },
-      backoffActive: Date.now() < this.openSkyBackoffUntilMs,
+      upstreamCallCounts: { ...this.upstreamCallCounts },
+      backoffActive: {
+        opensky: Date.now() < this.openSkyBackoffUntilMs,
+        adsbfi: Date.now() < this.adsbFiBackoffUntilMs,
+        adsblol: Date.now() < this.adsbLolBackoffUntilMs
+      },
       diagnostics: this.diagnostics
     };
   }

@@ -828,16 +828,28 @@ function connectLiveFeed(force = false) {
   sourceLabelEl.textContent = '실시간 ADS-B 수신 중...';
 
   if (state.backendAvailable) {
-    // Use reliable JSON polling against /api/flights (immune to Render/Cloudflare SSE proxy buffering)
+    // Reliable JSON polling (6s when active, throttled to 15s when browser tab is hidden)
+    let hiddenTicks = 0;
     fetchBackendOnce();
-    state.pollTimer = setInterval(fetchBackendOnce, 5000);
+    state.pollTimer = setInterval(() => {
+      if (document.hidden) {
+        hiddenTicks++;
+        if (hiddenTicks < 3) return;
+        hiddenTicks = 0;
+      } else {
+        hiddenTicks = 0;
+      }
+      fetchBackendOnce();
+    }, 6000);
     return;
   }
 
   // Static hosting (GitHub Pages): direct browser live ADS-B polling
   fetchDirectOnce(force);
   const intervalMs = state.provider === 'adsbfi' ? 6000 : 20000;
-  state.pollTimer = setInterval(() => fetchDirectOnce(false), intervalMs);
+  state.pollTimer = setInterval(() => {
+    if (!document.hidden) fetchDirectOnce(false);
+  }, intervalMs);
 }
 
 async function detectBackend() {
