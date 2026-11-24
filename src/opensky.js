@@ -3,20 +3,53 @@ const OPENSKY_OAUTH_URL = 'https://auth.opensky-network.org/auth/realms/opensky-
 const ADSBFI_BASE_URL = 'https://opendata.adsb.fi/api/v3';
 const ADSBLOL_BASE_URL = 'https://api.adsb.lol/v2';
 
-const USER_AGENT = 'AeroGlobe3D/1.1 (+https://github.com/knoxxr/flight-tracker-3d)';
+const USER_AGENT = 'AeroGlobe3D/1.2 (+https://github.com/knoxxr/flight-tracker-3d)';
 
-// High-traffic global ADS-B coverage hubs for multi-region real-time harvesting when OpenSky is rate-limited
+// 34 high-density global ADS-B hubs covering all major aviation corridors worldwide
 export const GLOBAL_LIVE_HUBS = [
-  { id: 'KR', name: 'Seoul/Korea', lat: 37.46, lon: 126.44 },
-  { id: 'EU-W', name: 'London', lat: 51.47, lon: -0.45 },
-  { id: 'US-E', name: 'New York', lat: 40.64, lon: -73.78 },
-  { id: 'JP', name: 'Tokyo', lat: 35.68, lon: 139.77 },
-  { id: 'EU-C', name: 'Frankfurt', lat: 50.04, lon: 8.56 },
-  { id: 'US-W', name: 'Los Angeles', lat: 33.94, lon: -118.41 },
-  { id: 'US-M', name: 'Chicago', lat: 41.97, lon: -87.91 },
-  { id: 'ME', name: 'Dubai', lat: 25.25, lon: 55.37 },
-  { id: 'SEA', name: 'Singapore', lat: 1.36, lon: 103.99 },
-  { id: 'AU', name: 'Sydney', lat: -33.94, lon: 151.18 }
+  // East Asia
+  { id: 'ICN', name: 'Seoul/Korea', lat: 37.46, lon: 126.44 },
+  { id: 'CJU', name: 'Busan/Jeju', lat: 34.40, lon: 127.80 },
+  { id: 'TYO', name: 'Tokyo', lat: 35.68, lon: 139.77 },
+  { id: 'OSA', name: 'Osaka', lat: 34.60, lon: 135.40 },
+  { id: 'SHA', name: 'Shanghai', lat: 31.14, lon: 121.81 },
+  { id: 'BJS', name: 'Beijing', lat: 40.08, lon: 116.60 },
+  { id: 'HKG', name: 'Hong Kong', lat: 22.31, lon: 113.92 },
+  { id: 'TPE', name: 'Taipei', lat: 25.08, lon: 121.23 },
+
+  // Europe
+  { id: 'LON', name: 'London', lat: 51.47, lon: -0.45 },
+  { id: 'PAR', name: 'Paris', lat: 49.01, lon: 2.55 },
+  { id: 'FRA', name: 'Frankfurt', lat: 50.04, lon: 8.56 },
+  { id: 'MAD', name: 'Madrid', lat: 40.50, lon: -3.57 },
+  { id: 'ROM', name: 'Rome', lat: 41.80, lon: 12.24 },
+  { id: 'WAW', name: 'Warsaw/Central EU', lat: 52.17, lon: 20.97 },
+  { id: 'STO', name: 'Stockholm/Nordics', lat: 59.65, lon: 17.92 },
+  { id: 'IST', name: 'Istanbul', lat: 41.28, lon: 28.75 },
+
+  // North America
+  { id: 'NYC', name: 'New York', lat: 40.64, lon: -73.78 },
+  { id: 'CHI', name: 'Chicago', lat: 41.97, lon: -87.91 },
+  { id: 'ATL', name: 'Atlanta', lat: 33.64, lon: -84.43 },
+  { id: 'DFW', name: 'Dallas', lat: 32.90, lon: -97.04 },
+  { id: 'MIA', name: 'Miami', lat: 25.80, lon: -80.29 },
+  { id: 'LAX', name: 'Los Angeles', lat: 33.94, lon: -118.41 },
+  { id: 'SFO', name: 'San Francisco', lat: 37.62, lon: -122.38 },
+  { id: 'SEA', name: 'Seattle', lat: 47.45, lon: -122.31 },
+  { id: 'YYZ', name: 'Toronto', lat: 43.68, lon: -79.62 },
+
+  // Southeast Asia, South Asia, Middle East
+  { id: 'SIN', name: 'Singapore', lat: 1.36, lon: 103.99 },
+  { id: 'BKK', name: 'Bangkok', lat: 13.69, lon: 100.75 },
+  { id: 'DEL', name: 'New Delhi', lat: 28.56, lon: 77.10 },
+  { id: 'BOM', name: 'Mumbai', lat: 19.09, lon: 72.87 },
+  { id: 'DXB', name: 'Dubai/Doha', lat: 25.25, lon: 55.37 },
+
+  // South America, Africa, Oceania
+  { id: 'GRU', name: 'Sao Paulo', lat: -23.44, lon: -46.47 },
+  { id: 'JNB', name: 'Johannesburg', lat: -26.14, lon: 28.24 },
+  { id: 'SYD', name: 'Sydney', lat: -33.94, lon: 151.18 },
+  { id: 'MEL', name: 'Melbourne', lat: -37.67, lon: 144.84 }
 ];
 
 /**
@@ -82,14 +115,14 @@ export function parseAdsbFiAircraft(ac, nowSec = Math.floor(Date.now() / 1000), 
   const icao24 = String(ac.hex || '').trim().toLowerCase();
   if (!icao24) return null;
 
-  const onGround = ac.alt_baro === 'ground' || ac.alt_baro === 0;
+  const speedKts = typeof ac.gs === 'number' ? Math.round(ac.gs) : 0;
+  const onGround = ac.alt_baro === 'ground' || (ac.alt_baro === 0 && speedKts < 45);
   const altFtRaw = typeof ac.alt_baro === 'number'
     ? ac.alt_baro
     : (typeof ac.alt_geom === 'number' ? ac.alt_geom : 0);
   const altitudeFt = Math.max(0, Math.round(altFtRaw));
   const altitudeM = Math.round(altitudeFt * 0.3048);
 
-  const speedKts = typeof ac.gs === 'number' ? Math.round(ac.gs) : 0;
   const speedMs = Number((speedKts * 0.514444).toFixed(1));
   const speedKmh = Math.round(speedKts * 1.852);
   const heading = typeof ac.track === 'number'
@@ -172,7 +205,7 @@ export class LiveAdsbClient {
     this.clientId = options.clientId || process.env.OPENSKY_CLIENT_ID || '';
     this.clientSecret = options.clientSecret || process.env.OPENSKY_CLIENT_SECRET || '';
     this.pollIntervalMs = Number(options.pollIntervalMs || process.env.OPENSKY_POLL_INTERVAL_MS || 20000);
-    this.maxFlights = Number(options.maxFlights || process.env.MAX_FLIGHTS || 1500);
+    this.maxFlights = Number(options.maxFlights || process.env.MAX_FLIGHTS || 5000);
 
     // OpenSky cache & backoff
     this.cachedOpenSky = [];
@@ -184,11 +217,13 @@ export class LiveAdsbClient {
     this.oauthToken = null;
     this.oauthExpiresAt = 0;
 
-    // Multi-hub real-time ADS-B aggregator (adsb.fi + adsb.lol) when OpenSky is unavailable/rate-limited
+    // Multi-hub real-time ADS-B aggregator (adsb.fi + adsb.lol) across 34 global hubs + active camera center
     this.hubFlights = new Map(); // icao24 -> { flight, fetchedAt }
     this.hubCursor = 0;
     this.harvesterTimer = null;
+    this.harvesterBusy = false;
     this.lastClientActivityMs = Date.now();
+    this.lastFocusQuery = { lat: null, lon: null, at: 0 };
     this.diagnostics = {
       opensky: { status: 'idle', count: 0, error: null, at: null },
       adsbfi: { status: 'idle', count: 0, error: null, at: null },
@@ -391,9 +426,9 @@ export class LiveAdsbClient {
     for (const f of flights) {
       this.hubFlights.set(f.icao24, { flight: f, fetchedAt: now });
     }
-    // Prune stale contacts older than 3 minutes
+    // Keep contacts fresh for up to 3.5 minutes while the 34-hub global sweep refreshes every ~25s
     for (const [key, entry] of this.hubFlights.entries()) {
-      if (now - entry.fetchedAt > 180_000) {
+      if (now - entry.fetchedAt > 210_000) {
         this.hubFlights.delete(key);
       }
     }
@@ -404,8 +439,8 @@ export class LiveAdsbClient {
     const list = [];
     for (const entry of this.hubFlights.values()) {
       const ageSec = (now - entry.fetchedAt) / 1000;
-      if (ageSec <= 180) {
-        list.push(deadReckonFlight(entry.flight, Math.min(ageSec, 45)));
+      if (ageSec <= 210) {
+        list.push(deadReckonFlight(entry.flight, Math.min(ageSec, 60)));
       }
     }
     return this.sampleEvenly(list, this.maxFlights);
@@ -413,65 +448,75 @@ export class LiveAdsbClient {
 
   _ensureHubHarvesterRunning() {
     if (this.harvesterTimer) return;
-    // Gently harvest 1 global hub every 2.2s (well under 1 req/s rate limit) while users are active
+    // Dual-provider parallel sweep: queries 1 hub on adsb.fi + 1 different hub on adsb.lol every 1.6s
+    // (~0.6 req/s per provider, completing all 34 global hubs in ~27 seconds!)
     this.harvesterTimer = setInterval(async () => {
       if (Date.now() - this.lastClientActivityMs > 90_000) {
         clearInterval(this.harvesterTimer);
         this.harvesterTimer = null;
         return;
       }
-      const hub = GLOBAL_LIVE_HUBS[this.hubCursor % GLOBAL_LIVE_HUBS.length];
-      this.hubCursor++;
-      const useLolFirst = this.hubCursor % 2 === 0;
-      const primary = useLolFirst
-        ? await this.fetchAdsbLol(hub.lat, hub.lon, 250)
-        : await this.fetchAdsbFi(hub.lat, hub.lon, 250);
-      if (primary.ok) {
-        this._mergeIntoHubCache(primary.flights);
-      } else {
-        const backup = useLolFirst
-          ? await this.fetchAdsbFi(hub.lat, hub.lon, 250)
-          : await this.fetchAdsbLol(hub.lat, hub.lon, 250);
-        if (backup.ok) this._mergeIntoHubCache(backup.flights);
+      if (this.harvesterBusy) return;
+      this.harvesterBusy = true;
+      try {
+        const hubA = GLOBAL_LIVE_HUBS[this.hubCursor % GLOBAL_LIVE_HUBS.length];
+        const hubB = GLOBAL_LIVE_HUBS[(this.hubCursor + 1) % GLOBAL_LIVE_HUBS.length];
+        this.hubCursor = (this.hubCursor + 2) % GLOBAL_LIVE_HUBS.length;
+
+        const [resFi, resLol] = await Promise.all([
+          this.fetchAdsbFi(hubA.lat, hubA.lon, 250),
+          this.fetchAdsbLol(hubB.lat, hubB.lon, 250)
+        ]);
+        if (resFi.ok) this._mergeIntoHubCache(resFi.flights);
+        if (resLol.ok) this._mergeIntoHubCache(resLol.flights);
+      } finally {
+        this.harvesterBusy = false;
       }
-    }, 2200);
+    }, 1600);
     if (typeof this.harvesterTimer.unref === 'function') {
       this.harvesterTimer.unref();
     }
   }
 
-  async _bootstrapHubs(focusLat, focusLon) {
-    // Query 2 different real-time ADS-B networks in parallel (1 req each, respects both rate limits)
-    // - adsb.fi on the user's focused view (e.g. Korea/Asia)
-    // - adsb.lol on London (Europe) so global flights populate immediately within ~1 second!
-    const [r1, r2] = await Promise.all([
-      this.fetchAdsbFi(focusLat, focusLon, 250),
-      this.fetchAdsbLol(51.47, -0.45, 250)
-    ]);
-    if (r1.ok) this._mergeIntoHubCache(r1.flights);
-    if (r2.ok) this._mergeIntoHubCache(r2.flights);
+  async _refreshFocusAreaIfMoved(lat, lon) {
+    const now = Date.now();
+    const prev = this.lastFocusQuery;
+    const movedEnough = prev.lat === null || Math.abs(lat - prev.lat) > 2.5 || Math.abs(lon - prev.lon) > 2.5;
+    if (!movedEnough && now - prev.at < 12_000) return;
 
-    // If focus area had 0 or adsb.fi failed, also try adsb.lol on focus area
-    if ((!r1.ok || r1.flights.length === 0) && r2.ok) {
-      const r3 = await this.fetchAdsbLol(focusLat, focusLon, 250);
-      if (r3.ok) this._mergeIntoHubCache(r3.flights);
-    }
+    this.lastFocusQuery = { lat, lon, at: now };
+    // Query user's current view on adsb.fi and another busy region on adsb.lol in parallel
+    const [rFocus, rExtra] = await Promise.all([
+      this.fetchAdsbFi(lat, lon, 250),
+      this.hubFlights.size < 200 ? this.fetchAdsbLol(40.64, -73.78, 250) : this.fetchAdsbLol(lat, lon, 250)
+    ]);
+    if (rFocus.ok) this._mergeIntoHubCache(rFocus.flights);
+    if (rExtra.ok) this._mergeIntoHubCache(rExtra.flights);
   }
 
   async fetchLiveFlights({ provider = 'opensky', lat = 37.46, lon = 126.44, distNm = 250 } = {}) {
     this.lastClientActivityMs = Date.now();
 
     if (provider === 'adsbfi') {
-      const fi = await this.fetchAdsbFi(lat, lon, distNm);
-      if (fi.ok && fi.flights.length > 0) return fi;
-      const lol = await this.fetchAdsbLol(lat, lon, distNm);
-      if (lol.ok) {
+      const [fi, lol] = await Promise.all([
+        this.fetchAdsbFi(lat, lon, distNm),
+        this.fetchAdsbLol(lat, lon, distNm)
+      ]);
+      const merged = new Map();
+      if (lol.ok) for (const f of lol.flights) merged.set(f.icao24, f);
+      if (fi.ok) for (const f of fi.flights) merged.set(f.icao24, f);
+      const combined = Array.from(merged.values());
+
+      if (fi.ok || lol.ok) {
+        this._mergeIntoHubCache(combined);
         return {
-          ...lol,
-          notice: fi.ok ? null : `adsb.fi 일시 지연으로 adsb.lol 실시간(반경 ${distNm}NM) 수신 중`
+          ok: true,
+          source: fi.ok && lol.ok ? 'adsb-local' : (fi.ok ? 'adsbfi' : 'adsblol'),
+          updatedAt: Date.now(),
+          totalRaw: combined.length,
+          flights: combined
         };
       }
-      if (fi.ok) return fi; // genuinely 0 planes in this 250NM circle
       return {
         ok: false,
         source: 'adsbfi',
@@ -480,16 +525,14 @@ export class LiveAdsbClient {
       };
     }
 
-    // Global mode: 1) Try OpenSky Network first
+    // Global mode: 1) Try OpenSky Network first (up to 5,000 global flights in one call)
     const globalRes = await this.fetchOpenSky();
     if (globalRes.ok && globalRes.flights.length > 0) {
       return globalRes;
     }
 
-    // 2) OpenSky rate-limited/blocked on cloud IP -> seamlessly harvest 100% REAL ADS-B from adsb.fi + adsb.lol across global hubs
-    if (this.hubFlights.size === 0) {
-      await this._bootstrapHubs(lat, lon);
-    }
+    // 2) OpenSky rate-limited/blocked -> harvest 100% REAL ADS-B from 34 global hubs + user's live camera focus
+    await this._refreshFocusAreaIfMoved(lat, lon);
     this._ensureHubHarvesterRunning();
 
     const hubList = this._getHubSnapshot();
@@ -499,7 +542,7 @@ export class LiveAdsbClient {
         source: 'adsb-global',
         updatedAt: Date.now(),
         totalRaw: this.hubFlights.size,
-        notice: `OpenSky 클라우드 IP 제한(${this.lastOpenSkyError || '429'})으로 adsb.fi + adsb.lol 글로벌 실시간 ADS-B 수집 중`,
+        notice: `OpenSky 클라우드 제한(${this.lastOpenSkyError || '429'})으로 전 세계 34개 허브 + 현재 화면 실시간 ADS-B 수집 중`,
         flights: hubList
       };
     }
@@ -529,6 +572,7 @@ export class LiveAdsbClient {
       lastError: this.lastOpenSkyError,
       cachedOpenSkyCount: this.cachedOpenSky.length,
       hubAggregatedCount: this.hubFlights.size,
+      totalHubs: GLOBAL_LIVE_HUBS.length,
       backoffActive: Date.now() < this.openSkyBackoffUntilMs,
       diagnostics: this.diagnostics
     };

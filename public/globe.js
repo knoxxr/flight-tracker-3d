@@ -951,7 +951,9 @@ export class Globe3D {
     projected.sort((a, b) => a.z - b.z);
     this.screenFlights = projected;
 
-    const baseSize = Math.min(9.5, 4.4 + this.zoom * 1.15);
+    const dense = projected.length > 700;
+    const densityScale = projected.length > 1800 ? 0.72 : (projected.length > 900 ? 0.85 : 1);
+    const baseSize = Math.min(9.5, (4.4 + this.zoom * 1.15) * densityScale);
 
     for (const item of projected) {
       const { flight, x, y, z, angle, tail, surface } = item;
@@ -963,7 +965,7 @@ export class Globe3D {
         : (isLight ? '#0369a1' : '#38bdf8');
 
       // 3D vertical altitude drop-line to ground shadow
-      if (surface && surface.z > 0) {
+      if (surface && surface.z > 0 && (!dense || isSelected || this.zoom > 2.4)) {
         ctx.strokeStyle = isSelected
           ? 'rgba(251, 191, 36, 0.72)'
           : (isLight ? 'rgba(15, 23, 42, 0.16)' : 'rgba(148, 210, 245, 0.18)');
@@ -979,15 +981,20 @@ export class Globe3D {
         ctx.fill();
       }
 
-      // Subtle motion wake trail
+      // Subtle motion wake trail (skip expensive CanvasGradient allocations when >700 planes visible)
       if (tail) {
-        const grad = ctx.createLinearGradient(x, y, tail.x, tail.y);
-        grad.addColorStop(0, isSelected ? '#fbbf24' : color);
-        grad.addColorStop(1, 'rgba(56, 189, 248, 0)');
         ctx.save();
-        ctx.globalAlpha = (isSelected ? 0.85 : 0.42) * depthAlpha;
-        ctx.strokeStyle = grad;
-        ctx.lineWidth = isSelected ? 2.0 : 1.15;
+        if (!dense || isSelected || isHovered) {
+          const grad = ctx.createLinearGradient(x, y, tail.x, tail.y);
+          grad.addColorStop(0, isSelected ? '#fbbf24' : color);
+          grad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+          ctx.globalAlpha = (isSelected ? 0.85 : 0.42) * depthAlpha;
+          ctx.strokeStyle = grad;
+        } else {
+          ctx.globalAlpha = 0.22 * depthAlpha;
+          ctx.strokeStyle = color;
+        }
+        ctx.lineWidth = isSelected ? 2.0 : (dense ? 0.85 : 1.15);
         ctx.beginPath();
         ctx.moveTo(x, y);
         ctx.lineTo(tail.x, tail.y);

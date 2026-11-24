@@ -191,7 +191,14 @@ function selectFlight(icao24, fly = true) {
 }
 
 function renderFlightList() {
-  const topFlights = state.flights.slice(0, 80);
+  const cLat = globe.camLat;
+  const cLon = ((((globe.camLon + 180) % 360) + 360) % 360) - 180;
+  const sorted = [...state.flights].sort((a, b) => {
+    const da = (a.lat - cLat) ** 2 + (a.lon - cLon) ** 2;
+    const db = (b.lat - cLat) ** 2 + (b.lon - cLon) ** 2;
+    return da - db;
+  });
+  const topFlights = sorted.slice(0, 150);
   if (state.flights.length === 0) {
     listSubtitleEl.textContent = '수신된 실시간 항공기가 없습니다';
     listContainerEl.innerHTML = '<p class="panel-subtitle">실시간 ADS-B 신호를 기다리는 중이거나 검색 결과가 없습니다.</p>';
@@ -200,7 +207,7 @@ function renderFlightList() {
 
   listSubtitleEl.textContent = state.searchQuery
     ? `검색 결과 ${formatNumber(state.flights.length)}대 중 상위 ${topFlights.length}대`
-    : `실시간 ${formatNumber(state.flights.length)}대 중 상위 ${topFlights.length}대`;
+    : `실시간 ${formatNumber(state.flights.length)}대 중 현재 화면 인접 ${topFlights.length}대`;
 
   listContainerEl.innerHTML = topFlights
     .map((f) => {
@@ -303,7 +310,8 @@ function renderFlightDetail() {
 
 function formatSourceTitle(src) {
   if (src === 'opensky') return 'LIVE · OpenSky Network (전 세계)';
-  if (src === 'adsb-global') return 'LIVE · adsb.fi + adsb.lol (글로벌 허브)';
+  if (src === 'adsb-global') return 'LIVE · 전 세계 34개 허브 실시간 ADS-B';
+  if (src === 'adsb-local') return 'LIVE · adsb.fi + adsb.lol (주변 250NM)';
   if (src === 'adsblol') return 'LIVE · adsb.lol (화면 반경 250NM)';
   if (src === 'adsbfi') return 'LIVE · adsb.fi (화면 반경 250NM)';
   return 'LIVE · ADS-B';
@@ -518,7 +526,7 @@ function bindUI() {
     setPanelMode('none');
   });
 
-  // Region camera presets — when in adsb.fi mode, also immediately fetch live planes for that region
+  // Region camera presets — immediately fetch live planes around the new region too
   document.querySelectorAll('#region-presets .chip-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('#region-presets .chip-btn').forEach((b) => b.classList.remove('active'));
@@ -526,7 +534,9 @@ function bindUI() {
       state.followSelected = false;
       globe.setFollowSelected(false);
       globe.flyTo(Number(btn.dataset.lat), Number(btn.dataset.lon), Number(btn.dataset.zoom));
-      if (state.provider === 'adsbfi' || state.activeSource === 'adsbfi') {
+      if (state.backendAvailable) {
+        setTimeout(() => fetchBackendOnce(), 150);
+      } else if (state.provider === 'adsbfi' || state.activeSource === 'adsbfi') {
         setTimeout(() => connectLiveFeed(true), 150);
       }
     });
