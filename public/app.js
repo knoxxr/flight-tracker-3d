@@ -41,6 +41,8 @@ const followBtn = document.getElementById('follow-flight-btn');
 const centerBtn = document.getElementById('center-flight-btn');
 const refreshBtn = document.getElementById('refresh-live-btn');
 
+let cameraFetchTimer = null;
+
 const globe = new Globe3D(canvas, {
   initialLat: 36,
   initialLon: 128,
@@ -49,6 +51,11 @@ const globe = new Globe3D(canvas, {
   dayNight: true,
   showTrails: true,
   showAirports: true,
+  onCameraSettled: () => {
+    if (!state.backendAvailable) return;
+    clearTimeout(cameraFetchTimer);
+    cameraFetchTimer = setTimeout(() => fetchBackendOnce(), 400);
+  },
   onSelectFlight: (flight) => {
     if (flight) {
       selectFlight(flight.icao24, false);
@@ -308,9 +315,15 @@ function renderFlightDetail() {
   renderLiveAltitudeChart(f);
 }
 
-function formatSourceTitle(src) {
-  if (src === 'opensky') return 'LIVE · OpenSky Network (전 세계)';
-  if (src === 'adsb-global') return 'LIVE · 전 세계 34개 허브 실시간 ADS-B';
+function formatSourceTitle(src, scanProgress) {
+  if (src === 'opensky') return 'LIVE · OpenSky Network (전 세계 전체)';
+  if (src === 'flyitaly') return 'LIVE · FlyItalyADSB (전 세계 전체)';
+  if (src === 'adsb-global') {
+    if (scanProgress && scanProgress.completed < scanProgress.total) {
+      return `LIVE · 전 세계 스캔 중 (${scanProgress.completed}/${scanProgress.total}구역)`;
+    }
+    return `LIVE · 전 세계 ${scanProgress?.total || 98}구역 실시간 ADS-B`;
+  }
   if (src === 'adsb-local') return 'LIVE · adsb.fi + adsb.lol (주변 250NM)';
   if (src === 'adsblol') return 'LIVE · adsb.lol (화면 반경 250NM)';
   if (src === 'adsbfi') return 'LIVE · adsb.fi (화면 반경 250NM)';
@@ -328,7 +341,7 @@ function handleLivePayload(payload) {
     recordTrackPoints(state.rawFlights);
 
     statusDotEl.className = 'status-dot';
-    sourceLabelEl.textContent = formatSourceTitle(state.activeSource);
+    sourceLabelEl.textContent = formatSourceTitle(state.activeSource, payload.scanProgress);
 
     if (payload.notice) {
       liveNoticeEl.textContent = payload.notice;

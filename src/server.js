@@ -110,6 +110,7 @@ export function createAppServer(options = {}) {
       timestamp: Date.now(),
       updatedAt: result.updatedAt || null,
       totalRaw: result.totalRaw ?? result.flights.length,
+      scanProgress: result.scanProgress || null,
       count: result.flights.length,
       flights: result.flights
     };
@@ -248,8 +249,11 @@ export function createAppServer(options = {}) {
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const PORT = Number(process.env.PORT || 3000);
   const HOST = process.env.HOST || '0.0.0.0';
-  const server = createAppServer();
+  const adsbClient = new LiveAdsbClient();
+  const server = createAppServer({ adsbClient });
   server.listen(PORT, HOST, () => {
     console.log(`[AeroGlobe3D] Live-Only ADS-B server listening on http://${HOST}:${PORT}`);
+    // Pre-warm the 96-cell global grid immediately on boot
+    adsbClient.startWarmup();
   });
 }

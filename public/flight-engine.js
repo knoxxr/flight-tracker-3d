@@ -131,7 +131,7 @@ function parseAdsbFiItem(ac, nowSec) {
 
 export class LiveBrowserAdsbClient {
   constructor() {
-    this.maxFlights = 5000;
+    this.maxFlights = 15000;
     this.openSkyBackoffUntil = 0;
     this.lastOpenSkyFetch = 0;
     this.lastOpenSkyError = null;

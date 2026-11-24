@@ -59,6 +59,7 @@ export class Globe3D {
     this.ctx = canvas.getContext('2d');
     this.onSelectFlight = options.onSelectFlight || (() => {});
     this.onHoverFlight = options.onHoverFlight || (() => {});
+    this.onCameraSettled = options.onCameraSettled || (() => {});
 
     // Camera state (smoothly damped toward target)
     this.camLat = options.initialLat ?? 32;
@@ -281,9 +282,14 @@ export class Globe3D {
 
       if (activePointers.size === 0) {
         const shouldTap = allowTap && !this.dragMoved && !wasPinching;
+        const movedView = this.dragMoved || wasPinching;
         this.isDragging = false;
         prevPinchDist = null;
         wasPinching = false;
+
+        if (movedView) {
+          this.onCameraSettled({ lat: this.targetLat, lon: this.targetLon, zoom: this.targetZoom });
+        }
 
         if (shouldTap) {
           const rect = el.getBoundingClientRect();
@@ -1014,7 +1020,8 @@ export class Globe3D {
         ctx.restore();
       }
 
-      // Crisp oriented airplane silhouette
+      // Crisp oriented airplane silhouette (with fast 4-vertex jet dart LOD when >1,500 visible & zoomed out)
+      const useFastLod = projected.length > 1500 && this.zoom < 1.85 && !isSelected && !isHovered;
       const s = isSelected ? baseSize * 1.42 : isHovered ? baseSize * 1.25 : baseSize;
       ctx.save();
       ctx.translate(x, y);
@@ -1023,23 +1030,30 @@ export class Globe3D {
       ctx.fillStyle = isSelected ? '#fef08a' : color;
 
       ctx.beginPath();
-      // Fuselage nose -> right wing -> tail -> left wing
-      ctx.moveTo(s * 1.15, 0);
-      ctx.lineTo(s * 0.25, s * 0.22);
-      ctx.lineTo(-s * 0.18, s * 1.05);
-      ctx.lineTo(-s * 0.45, s * 0.95);
-      ctx.lineTo(-s * 0.22, s * 0.2);
-      ctx.lineTo(-s * 0.78, s * 0.14);
-      ctx.lineTo(-s * 1.02, s * 0.46);
-      ctx.lineTo(-s * 1.15, s * 0.42);
-      ctx.lineTo(-s * 0.98, 0);
-      ctx.lineTo(-s * 1.15, -s * 0.42);
-      ctx.lineTo(-s * 1.02, -s * 0.46);
-      ctx.lineTo(-s * 0.78, -s * 0.14);
-      ctx.lineTo(-s * 0.22, -s * 0.2);
-      ctx.lineTo(-s * 0.45, -s * 0.95);
-      ctx.lineTo(-s * 0.18, -s * 1.05);
-      ctx.lineTo(s * 0.25, -s * 0.22);
+      if (useFastLod) {
+        ctx.moveTo(s * 1.15, 0);
+        ctx.lineTo(-s * 0.72, s * 0.78);
+        ctx.lineTo(-s * 0.35, 0);
+        ctx.lineTo(-s * 0.72, -s * 0.78);
+      } else {
+        // Fuselage nose -> right wing -> tail -> left wing
+        ctx.moveTo(s * 1.15, 0);
+        ctx.lineTo(s * 0.25, s * 0.22);
+        ctx.lineTo(-s * 0.18, s * 1.05);
+        ctx.lineTo(-s * 0.45, s * 0.95);
+        ctx.lineTo(-s * 0.22, s * 0.2);
+        ctx.lineTo(-s * 0.78, s * 0.14);
+        ctx.lineTo(-s * 1.02, s * 0.46);
+        ctx.lineTo(-s * 1.15, s * 0.42);
+        ctx.lineTo(-s * 0.98, 0);
+        ctx.lineTo(-s * 1.15, -s * 0.42);
+        ctx.lineTo(-s * 1.02, -s * 0.46);
+        ctx.lineTo(-s * 0.78, -s * 0.14);
+        ctx.lineTo(-s * 0.22, -s * 0.2);
+        ctx.lineTo(-s * 0.45, -s * 0.95);
+        ctx.lineTo(-s * 0.18, -s * 1.05);
+        ctx.lineTo(s * 0.25, -s * 0.22);
+      }
       ctx.closePath();
       ctx.fill();
 
