@@ -1,11 +1,21 @@
-// Flightradar24-style Real-Anchor Oceanic & Blind-Spot Flight Estimator.
+// Flightradar24-style Real-Anchor Oceanic & Blind-Spot Flight Estimator (100% Free).
 // Never invents fake flights: ONLY projects genuinely received live ADS-B cruise aircraft
 // along their real adsbdb/hexdb Great Circle route (or short conservative track) after
 // they fly beyond coastal/terrestrial ADS-B receiver coverage.
+// Supports zero-dependency persistence to local JSON file and optional free Upstash Redis REST.
+
+import fs from 'node:fs';
+import path from 'node:path';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
 const EARTH_RADIUS_KM = 6371.0088;
+
+const LONG_HAUL_TYPES = new Set([
+  'A388', 'A380', 'B744', 'B748', 'B772', 'B773', 'B77W', 'B77L', 'B778', 'B779',
+  'B788', 'B789', 'B78X', 'A359', 'A35K', 'A332', 'A333', 'A338', 'A339',
+  'A342', 'A343', 'A345', 'A346', 'B763', 'B764', 'MD11', 'A321', 'A21N'
+]);
 
 export function haversineKm(lat1, lon1, lat2, lon2) {
   const dLat = (lat2 - lat1) * DEG2RAD;
@@ -101,7 +111,6 @@ export function advanceByHeading(lat, lon, headingDeg, distKm) {
 
   const nextLat = phi2 * RAD2DEG;
   const nextLon = ((((lam2 * RAD2DEG) + 540) % 360) - 180);
-  // Forward bearing at destination is reverse of back-azimuth
   const backBearing = initialBearingDeg(nextLat, nextLon, lat, lon);
   const nextHeading = (backBearing + 180) % 360;
 
@@ -112,81 +121,238 @@ export function advanceByHeading(lat, lon, headingDeg, distKm) {
   };
 }
 
-const MAX_ROUTE_ESTIMATE_MS = 8 * 60 * 60 * 1000; // Up to 8 hours for transoceanic routes
-const MAX_HEADING_ESTIMATE_MS = 45 * 60 * 1000; // Conservative 45 min cap when route is unknown
+const MAX_ROUTE_ESTIMATE_MS = 10 * 60 * 60 * 1000; // Up to 10 hours for ultra-long-haul transpacific routes
+const MAX_HEADING_ESTIMATE_MS = 50 * 60 * 1000; // Conservative 50 min cap when route is unknown
 const MIN_SILENCE_FOR_ESTIMATE_MS = 35 * 1000; // Wait 35s after leaving live set before estimating
-const MAX_STORED_ANCHORS = 3500;
+const MAX_STORED_ANCHORS = 4000;
+const UPSTASH_KEY = 'aeroglobe:oceanic_anchors:v1';
 
 export class OceanicEstimator {
   constructor(options = {}) {
     this.enrichmentService = options.enrichmentService || null;
+    this.stateFile = options.stateFile ?? process.env.OCEANIC_STATE_FILE ?? null;
+    this.upstashUrl = options.upstashUrl ?? process.env.UPSTASH_REDIS_REST_URL ?? '';
+    this.upstashToken = options.upstashToken ?? process.env.UPSTASH_REDIS_REST_TOKEN ?? '';
+    this.persistIntervalMs = Number(options.persistIntervalMs || 60_000);
+
     this.anchors = new Map(); // icao24 -> { flight, observedAtMs, routeState, route, routeCheckedAt }
     this.lookupQueue = [];
     this.lookupQueuedSet = new Set();
     this.lookupTimer = null;
     this.lookupBusy = false;
+    this.persistTimer = null;
+    this.lastPersistAt = null;
+    this.restoredCount = 0;
+  }
+
+  /**
+   * Export active anchors for free local disk or Upstash Redis persistence.
+   */
+  exportState(nowMs = Date.now()) {
+    const entries = [];
+    for (const [icao24, entry] of this.anchors.entries()) {
+      const ageMs = nowMs - entry.observedAtMs;
+      if (ageMs > MAX_ROUTE_ESTIMATE_MS) continue;
+      if (entry.routeState !== 'resolved' && ageMs > MAX_HEADING_ESTIMATE_MS) continue;
+      entries.push({
+        icao24,
+        flight: entry.flight,
+        observedAtMs: entry.observedAtMs,
+        routeState: entry.routeState === 'pending' ? 'idle' : entry.routeState,
+        route: entry.route || null,
+        routeCheckedAt: entry.routeCheckedAt || 0
+      });
+    }
+    return { version: 1, savedAt: nowMs, entries };
+  }
+
+  /**
+   * Restore previously persisted anchors after server restart or Render wake-up.
+   */
+  importState(data, nowMs = Date.now()) {
+    if (!data || !Array.isArray(data.entries)) return 0;
+    let restored = 0;
+    for (const item of data.entries) {
+      if (!item?.icao24 || !item?.flight || typeof item.observedAtMs !== 'number') continue;
+      const ageMs = nowMs - item.observedAtMs;
+      if (ageMs < 0 || ageMs > MAX_ROUTE_ESTIMATE_MS) continue;
+      if (item.routeState !== 'resolved' && ageMs > MAX_HEADING_ESTIMATE_MS) continue;
+      if (this.anchors.has(item.icao24)) continue;
+      this.anchors.set(item.icao24, {
+        flight: item.flight,
+        observedAtMs: item.observedAtMs,
+        routeState: item.routeState === 'resolved' && item.route ? 'resolved' : 'idle',
+        route: item.route || null,
+        routeCheckedAt: item.routeCheckedAt || 0
+      });
+      restored++;
+      if (this.anchors.size >= MAX_STORED_ANCHORS) break;
+    }
+    this.restoredCount = restored;
+    return restored;
+  }
+
+  async loadPersistedState() {
+    // 1) Try free Upstash Redis REST if configured (survives Render ephemeral disk resets!)
+    if (this.upstashUrl && this.upstashToken) {
+      try {
+        const res = await fetch(`${this.upstashUrl.replace(/\/$/, '')}/get/${encodeURIComponent(UPSTASH_KEY)}`, {
+          headers: { Authorization: `Bearer ${this.upstashToken}` },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (typeof json?.result === 'string' && json.result.length > 2) {
+            const parsed = JSON.parse(json.result);
+            const n = this.importState(parsed);
+            if (n > 0) return n;
+          }
+        }
+      } catch {
+        // Fallback to local state file
+      }
+    }
+
+    // 2) Try local JSON file (zero-cost disk persistence across process restarts)
+    if (this.stateFile) {
+      try {
+        if (fs.existsSync(this.stateFile)) {
+          const raw = fs.readFileSync(this.stateFile, 'utf8');
+          const parsed = JSON.parse(raw);
+          return this.importState(parsed);
+        }
+      } catch {
+        // Ignore corrupt/missing file
+      }
+    }
+    return 0;
+  }
+
+  async savePersistedState() {
+    const payload = this.exportState();
+    if (payload.entries.length === 0) return false;
+    const serialized = JSON.stringify(payload);
+    let saved = false;
+
+    if (this.stateFile) {
+      try {
+        const dir = path.dirname(this.stateFile);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const tmp = `${this.stateFile}.tmp`;
+        fs.writeFileSync(tmp, serialized, 'utf8');
+        fs.renameSync(tmp, this.stateFile);
+        saved = true;
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    if (this.upstashUrl && this.upstashToken) {
+      try {
+        const res = await fetch(this.upstashUrl.replace(/\/$/, ''), {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.upstashToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(['SET', UPSTASH_KEY, serialized, 'EX', 36000]),
+          signal: AbortSignal.timeout(5000)
+        });
+        if (res.ok) saved = true;
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    if (saved) this.lastPersistAt = new Date().toISOString();
+    return saved;
+  }
+
+  startPersistence() {
+    if (!this.stateFile && !(this.upstashUrl && this.upstashToken)) return;
+    this.loadPersistedState().catch(() => {});
+    if (this.persistTimer) return;
+    this.persistTimer = setInterval(() => {
+      this.savePersistedState().catch(() => {});
+    }, this.persistIntervalMs);
+    if (typeof this.persistTimer.unref === 'function') {
+      this.persistTimer.unref();
+    }
   }
 
   /**
    * Record currently received live airborne flights as real last-seen anchors.
+   * Proactively pre-warms routes for high-altitude long-haul jets so coastal exits are seamless!
    */
   observeLiveFlights(flights, nowMs = Date.now()) {
     if (!Array.isArray(flights)) return;
     for (let i = 0; i < flights.length; i++) {
       const f = flights[i];
       if (!f || !f.icao24 || f.onGround || f.estimated) continue;
-      // Only track cruising/climbing jet traffic capable of crossing oceans or blind spots
       if ((f.altitudeFt || 0) < 16000 || (f.speedKts || 0) < 220) continue;
 
-      const existing = this.anchors.get(f.icao24);
-      if (existing) {
-        const callChanged = existing.flight.callsign !== f.callsign;
-        existing.flight = f;
-        existing.observedAtMs = nowMs;
+      let entry = this.anchors.get(f.icao24);
+      if (entry) {
+        const callChanged = entry.flight.callsign !== f.callsign;
+        entry.flight = f;
+        entry.observedAtMs = nowMs;
         if (callChanged) {
-          existing.routeState = 'idle';
-          existing.route = null;
+          entry.routeState = 'idle';
+          entry.route = null;
         }
       } else {
         if (this.anchors.size >= MAX_STORED_ANCHORS) {
-          // Evict oldest anchor
           const oldestKey = this.anchors.keys().next().value;
           if (oldestKey) this.anchors.delete(oldestKey);
         }
-        this.anchors.set(f.icao24, {
+        entry = {
           flight: f,
           observedAtMs: nowMs,
           routeState: 'idle', // 'idle' | 'pending' | 'resolved' | 'none'
           route: null,
           routeCheckedAt: 0
-        });
+        };
+        this.anchors.set(f.icao24, entry);
+      }
+
+      // Proactive route pre-warming: when queue has room, pre-fetch routes for high-altitude widebodies
+      // so the instant they exit coastal ADS-B range, their oceanic Great Circle route is ready!
+      if (entry.routeState === 'idle' &&
+        this.lookupQueue.length < 18 &&
+        (f.altitudeFt || 0) >= 30000 &&
+        (f.speedKts || 0) >= 380 &&
+        LONG_HAUL_TYPES.has(String(f.aircraftType || '').toUpperCase())) {
+        this._enqueueRouteLookup(f.icao24, f.callsign, false);
       }
     }
   }
 
-  _enqueueRouteLookup(icao24, callsign) {
+  _enqueueRouteLookup(icao24, callsign, highPriority = true) {
     if (!this.enrichmentService) return;
     const cleanCall = String(callsign || '').trim().toUpperCase();
-    // Skip hex-only callsigns without airline prefix
     if (!cleanCall || cleanCall === icao24.toUpperCase() || !/^[A-Z]{2,3}\d/.test(cleanCall)) {
       const entry = this.anchors.get(icao24);
       if (entry) entry.routeState = 'none';
       return;
     }
     if (this.lookupQueuedSet.has(icao24)) return;
-    if (this.lookupQueue.length >= 80) return;
+    if (this.lookupQueue.length >= 90) return;
 
     const entry = this.anchors.get(icao24);
     if (!entry || entry.routeState !== 'idle') return;
     entry.routeState = 'pending';
     this.lookupQueuedSet.add(icao24);
-    this.lookupQueue.push({ icao24, callsign: cleanCall });
+    if (highPriority) {
+      this.lookupQueue.unshift({ icao24, callsign: cleanCall });
+    } else {
+      this.lookupQueue.push({ icao24, callsign: cleanCall });
+    }
     this._ensureLookupWorker();
   }
 
   _ensureLookupWorker() {
     if (this.lookupTimer || !this.enrichmentService) return;
-    // Gentle 850ms interval (~1.1 req/s max) to stay super polite to adsbdb.com & hexdb.io
+    // Polite 900ms interval (~1.1 req/s max) to respect adsbdb.com & hexdb.io
     this.lookupTimer = setInterval(async () => {
       if (this.lookupQueue.length === 0) {
         clearInterval(this.lookupTimer);
@@ -217,7 +383,7 @@ export class OceanicEstimator {
       } finally {
         this.lookupBusy = false;
       }
-    }, 850);
+    }, 900);
     if (typeof this.lookupTimer.unref === 'function') {
       this.lookupTimer.unref();
     }
@@ -242,9 +408,9 @@ export class OceanicEstimator {
       const speedKmh = f.speedKmh || Math.round((f.speedKts || 450) * 1.852);
       const distKm = (speedKmh * elapsedSec) / 3600;
 
-      // Trigger polite background route resolution as soon as a real cruise flight enters blind spot
+      // High-priority route lookup for planes actively entering oceanic blind spots
       if (entry.routeState === 'idle') {
-        this._enqueueRouteLookup(icao24, f.callsign);
+        this._enqueueRouteLookup(icao24, f.callsign, true);
       }
 
       if (entry.routeState === 'resolved' && entry.route) {
@@ -258,7 +424,7 @@ export class OceanicEstimator {
         const headingMismatch = angularDiffDeg(f.heading || 0, bearingToDest);
         const initialRemainKm = haversineKm(f.lat, f.lon, dest.lat, dest.lon);
 
-        // Verify the plane was actually flying toward this destination (guards against outdated return-leg routes)
+        // Verify the plane was actually flying toward this destination (guards against return-leg callsigns)
         if (initialRemainKm > 35 && headingMismatch <= 85) {
           const step = advanceAlongGreatCircle(f.lat, f.lon, dest.lat, dest.lon, distKm);
           if (step.arrived) {
@@ -296,7 +462,7 @@ export class OceanicEstimator {
         }
       }
 
-      // Conservative heading-based projection when route is unavailable or pending (high-altitude jets only, <= 45 min)
+      // Conservative heading-based projection when route is unavailable or pending (high-altitude jets only, <= 50 min)
       if (elapsedMs <= MAX_HEADING_ESTIMATE_MS && (f.altitudeFt || 0) >= 24000 && (f.speedKts || 0) >= 280) {
         const step = advanceByHeading(f.lat, f.lon, f.heading || 0, distKm);
         estimated.push({
@@ -330,7 +496,12 @@ export class OceanicEstimator {
     return {
       trackedAnchors: this.anchors.size,
       resolvedRoutes: resolved,
-      pendingRouteLookups: this.lookupQueue.length
+      pendingRouteLookups: this.lookupQueue.length,
+      restoredOnBoot: this.restoredCount,
+      persistenceMode: (this.upstashUrl && this.upstashToken)
+        ? 'upstash-redis'
+        : (this.stateFile ? 'local-file' : 'memory-only'),
+      lastPersistAt: this.lastPersistAt
     };
   }
 
@@ -338,6 +509,10 @@ export class OceanicEstimator {
     if (this.lookupTimer) {
       clearInterval(this.lookupTimer);
       this.lookupTimer = null;
+    }
+    if (this.persistTimer) {
+      clearInterval(this.persistTimer);
+      this.persistTimer = null;
     }
   }
 }

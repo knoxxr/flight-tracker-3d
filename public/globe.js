@@ -1178,6 +1178,30 @@ export class Globe3D {
         ctx.fillText(ep.code, p.x + 12, p.y + 0.5);
       }
     }
+
+    // Mark the last coastal real-time ADS-B reception anchor for estimated oceanic aircraft
+    if (flight.estimated && typeof flight.lastLiveLat === 'number' && typeof flight.lastLiveLon === 'number') {
+      const pAnchor = this._projectVec(latLonToVec3(flight.lastLiveLat, flight.lastLiveLon), mat, cx, cy, R, 1.012);
+      if (pAnchor.z > 0) {
+        ctx.fillStyle = '#c084fc';
+        ctx.beginPath();
+        ctx.arc(pAnchor.x, pAnchor.y, 3.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = isLight ? '#ffffff' : '#091526';
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+
+        const tag = '마지막 수신';
+        ctx.font = '600 9.5px -apple-system, BlinkMacSystemFont, "Noto Sans KR", sans-serif';
+        const tw = ctx.measureText(tag).width + 8;
+        ctx.fillStyle = isLight ? 'rgba(255,255,255,0.9)' : 'rgba(15, 10, 34, 0.88)';
+        ctx.beginPath();
+        ctx.roundRect(pAnchor.x + 6, pAnchor.y - 8, tw, 16, 4);
+        ctx.fill();
+        ctx.fillStyle = '#d8b4fe';
+        ctx.fillText(tag, pAnchor.x + 10, pAnchor.y + 0.5);
+      }
+    }
   }
 
   _drawLiveSelectedTrack(ctx, flight, mat, cx, cy, R, isLight) {

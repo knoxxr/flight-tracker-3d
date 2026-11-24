@@ -278,7 +278,13 @@ export function createAppServer(options = {}) {
       const ip = getClientIp(req);
 
       if (pathname === '/api/health') {
-        return sendJson(req, res, 200, { status: 'ok', mode: 'live-only', uptimeSec: Math.round(process.uptime()) });
+        if (typeof adsbClient.touchActivity === 'function') adsbClient.touchActivity();
+        return sendJson(req, res, 200, {
+          status: 'ok',
+          mode: 'live-only',
+          uptimeSec: Math.round(process.uptime()),
+          oceanicAnchors: oceanicEstimator.getStats().trackedAnchors
+        });
       }
 
       if (pathname === '/api/status' || pathname === '/api/debug') {
@@ -475,10 +481,26 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const PORT = Number(process.env.PORT || 3000);
   const HOST = process.env.HOST || '0.0.0.0';
   const adsbClient = new LiveAdsbClient();
-  const server = createAppServer({ adsbClient, snapshotCacheMs: 3000 });
+  const enrichmentService = new AircraftEnrichmentService();
+  const stateFile = process.env.OCEANIC_STATE_FILE || path.resolve(__dirname, '../data/oceanic-anchors.json');
+  const oceanicEstimator = new OceanicEstimator({ enrichmentService, stateFile });
+  const server = createAppServer({ adsbClient, enrichmentService, oceanicEstimator, snapshotCacheMs: 3000 });
+
   server.listen(PORT, HOST, () => {
     console.log(`[AeroGlobe3D] Public-ready Live ADS-B server listening on http://${HOST}:${PORT}`);
-    // Pre-warm the 98-cell global grid immediately on boot
+    // Restore any persisted oceanic anchors and pre-warm global coastal gateways immediately
+    oceanicEstimator.startPersistence();
     adsbClient.startWarmup();
   });
+
+  const gracefulShutdown = async () => {
+    try {
+      await oceanicEstimator.savePersistedState();
+    } catch {
+      // Ignore
+    }
+    server.close(() => process.exit(0));
+  };
+  process.once('SIGTERM', gracefulShutdown);
+  process.once('SIGINT', gracefulShutdown);
 }

@@ -1,0 +1,22 @@
+name: Keep Render Oceanic Harvester Awake
+
+on:
+  schedule:
+    # Runs every 10 minutes to prevent Render free-tier sleep so oceanic anchors accumulate 24/7
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render /api/health (skips cleanly if RENDER_APP_URL secret is not set)
+        env:
+          RENDER_APP_URL: ${{ secrets.RENDER_APP_URL }}
+        run: |
+          if [ -z "$RENDER_APP_URL" ]; then
+            echo "RENDER_APP_URL secret is not configured yet; skipping keepalive ping."
+            exit 0
+          fi
+          BASE="${RENDER_APP_URL%/}"
+          curl -fsS --max-time 25 "${BASE}/api/health" && echo ""

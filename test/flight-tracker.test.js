@@ -546,3 +546,42 @@ test('HTTP server coalesces concurrent /api/flights requests via snapshot cache,
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test('OceanicEstimator exports and restores persisted anchors cleanly across server restarts', () => {
+  const t0 = 1_700_000_000_000;
+  const estA = new OceanicEstimator();
+  estA.observeLiveFlights([{
+    icao24: '71bf88',
+    callsign: 'KAL011',
+    aircraftType: 'A388',
+    lat: 36.0,
+    lon: 141.0,
+    altitudeFt: 37000,
+    speedKts: 500,
+    speedKmh: 926,
+    heading: 58,
+    onGround: false
+  }], t0);
+  const anchor = estA.anchors.get('71bf88');
+  anchor.routeState = 'resolved';
+  anchor.route = {
+    callsignIata: 'KE11',
+    origin: { iata: 'ICN', lat: 37.4691, lon: 126.4505 },
+    destination: { iata: 'LAX', lat: 33.9416, lon: -118.4085 }
+  };
+
+  const exported = estA.exportState(t0 + 600_000);
+  assert.equal(exported.entries.length, 1);
+
+  const estB = new OceanicEstimator();
+  const restoredCount = estB.importState(exported, t0 + 3600_000);
+  assert.equal(restoredCount, 1);
+  const projected = estB.getEstimatedFlights(new Set(), t0 + 2 * 3600_000);
+  assert.equal(projected.length, 1);
+  assert.equal(projected[0].origin, 'ICN');
+  assert.equal(projected[0].destination, 'LAX');
+  assert.equal(projected[0].lastLiveLat, 36.0);
+  assert.equal(projected[0].lastLiveLon, 141.0);
+  estA.stop();
+  estB.stop();
+});

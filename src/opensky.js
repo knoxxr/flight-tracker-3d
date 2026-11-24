@@ -83,11 +83,14 @@ export const GLOBAL_LIVE_HUBS = [
   { id: 'CAR-E', name: 'Puerto Rico/Caribbean', lat: 18.4, lon: -66.0 },
   { id: 'CAR-W', name: 'Panama/Costa Rica', lat: 9.5, lon: -81.0 },
 
-  // Pacific Ocean Corridors & Islands
+  // Pacific Ocean Corridors & Coastal Gateways
   { id: 'PAC-HI', name: 'Honolulu/Hawaii', lat: 21.3, lon: -157.9 },
   { id: 'PAC-GU', name: 'Guam/Micronesia', lat: 13.5, lon: 144.8 },
   { id: 'PAC-FJ', name: 'Fiji/South Pacific', lat: -17.8, lon: 177.5 },
   { id: 'PAC-PF', name: 'Tahiti/French Polynesia', lat: -17.5, lon: -149.6 },
+  { id: 'PAC-JP-E', name: 'East Hokkaido/Kurile Gateway', lat: 43.5, lon: 146.0 },
+  { id: 'PAC-AK-W', name: 'Aleutians/Bering Gateway', lat: 53.9, lon: -166.5 },
+  { id: 'PAC-CA-W', name: 'California Oceanic Gateway', lat: 35.5, lon: -124.5 },
 
   // Southeast & South Asia
   { id: 'SEA-VN', name: 'Hanoi/Ho Chi Minh', lat: 14.5, lon: 107.0 },
@@ -108,6 +111,7 @@ export const GLOBAL_LIVE_HUBS = [
   { id: 'ME-IL', name: 'Cairo/Amman/Levant', lat: 30.5, lon: 33.5 },
   { id: 'IO-MV', name: 'Maldives/Indian Ocean', lat: 4.2, lon: 73.5 },
   { id: 'IO-MU', name: 'Mauritius/Reunion', lat: -20.3, lon: 57.5 },
+  { id: 'ATL-CV', name: 'Cape Verde/South Atlantic Gateway', lat: 16.7, lon: -22.9 },
 
   // Africa
   { id: 'AF-MA', name: 'Casablanca/Algiers', lat: 34.5, lon: -3.0 },
@@ -128,6 +132,7 @@ export const GLOBAL_LIVE_HUBS = [
   { id: 'AU-SYD', name: 'Sydney/Brisbane', lat: -31.0, lon: 151.5 },
   { id: 'AU-MEL', name: 'Melbourne/Adelaide', lat: -37.2, lon: 143.0 },
   { id: 'AU-PER', name: 'Perth/West Australia', lat: -31.9, lon: 116.0 },
+  { id: 'AU-DRW', name: 'Darwin/Timor Sea Gateway', lat: -12.4, lon: 130.9 },
   { id: 'NZ', name: 'Auckland/Wellington', lat: -38.5, lon: 175.0 }
 ];
 
@@ -709,15 +714,22 @@ export class LiveAdsbClient {
     return out;
   }
 
+  touchActivity() {
+    this.lastClientActivityMs = Date.now();
+    this._ensureHubHarvesterRunning();
+  }
+
   _ensureHubHarvesterRunning() {
     if (this.harvesterTimer) return;
-    // Dual-provider parallel sweep across 98 global cells:
-    // Strictly <= 0.7 req/s per provider regardless of concurrent visitor count!
+    // Dual-provider parallel sweep across 103 global cells (including oceanic gateways):
+    // Strictly <= 0.7 req/s per provider when active, and throttles to ~0.35 req/s in 24/7 idle-cruise
+    // so coastal departures continuously feed OceanicEstimator even between visitors!
+    let idleSkipToggle = false;
     this.harvesterTimer = setInterval(async () => {
-      if (Date.now() - this.lastClientActivityMs > 180_000 && this.scannedCells.size >= GLOBAL_LIVE_HUBS.length) {
-        clearInterval(this.harvesterTimer);
-        this.harvesterTimer = null;
-        return;
+      const idle = Date.now() - this.lastClientActivityMs > 180_000 && this.scannedCells.size >= GLOBAL_LIVE_HUBS.length;
+      if (idle) {
+        idleSkipToggle = !idleSkipToggle;
+        if (idleSkipToggle) return; // Half-speed gentle 24/7 oceanic anchor harvesting
       }
       if (this.harvesterBusy) return;
       this.harvesterBusy = true;
