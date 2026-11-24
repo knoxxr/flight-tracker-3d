@@ -131,9 +131,32 @@
               <span class="detail-type-tag" id="detail-aircraft-type">ADS-B</span>
               <span class="phase-tag" id="detail-phase">순항</span>
             </div>
-            <p class="panel-subtitle" id="detail-airline">---</p>
+            <div class="detail-airline-row">
+              <span class="country-pill" id="detail-country-pill">🌐 미상</span>
+              <p class="panel-subtitle" id="detail-airline">---</p>
+            </div>
           </div>
           <button type="button" class="icon-close-btn" id="close-detail-btn" aria-label="닫기">×</button>
+        </div>
+
+        <!-- Real Origin -> Destination Route Card (always visible: loading / resolved / unavailable) -->
+        <div class="route-banner" id="detail-route-card">
+          <div class="route-endpoint">
+            <span class="route-endpoint-label">출발지</span>
+            <span class="route-iata" id="detail-origin-iata">---</span>
+            <span class="route-name" id="detail-origin-city">조회 중...</span>
+          </div>
+          <div class="route-line-wrap">
+            <div class="route-progress-track">
+              <div class="route-progress-fill" id="detail-route-progress" style="width:0%"></div>
+            </div>
+            <span class="route-meta" id="detail-route-eta">노선 조회 중...</span>
+          </div>
+          <div class="route-endpoint right">
+            <span class="route-endpoint-label">목적지</span>
+            <span class="route-iata" id="detail-dest-iata">---</span>
+            <span class="route-name" id="detail-dest-city">조회 중...</span>
+          </div>
         </div>
 
         <!-- Real Aircraft Photo (shown when available from adsbdb / Planespotters.net) -->
@@ -144,24 +167,6 @@
             <span id="detail-photo-credit" class="photo-credit">---</span>
           </figcaption>
         </figure>
-
-        <!-- Real Origin -> Destination Route Card (shown when resolved via adsbdb) -->
-        <div class="route-banner hidden" id="detail-route-card">
-          <div class="route-endpoint">
-            <span class="route-iata" id="detail-origin-iata">---</span>
-            <span class="route-name" id="detail-origin-city">출발지</span>
-          </div>
-          <div class="route-line-wrap">
-            <div class="route-progress-track">
-              <div class="route-progress-fill" id="detail-route-progress" style="width:0%"></div>
-            </div>
-            <span class="route-meta" id="detail-route-eta">---</span>
-          </div>
-          <div class="route-endpoint right">
-            <span class="route-iata" id="detail-dest-iata">---</span>
-            <span class="route-name" id="detail-dest-city">도착지</span>
-          </div>
-        </div>
 
         <!-- Live Transponder Status Banner -->
         <div class="live-signal-banner">

@@ -636,15 +636,42 @@ body {
   white-space: nowrap;
 }
 
+.detail-airline-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.country-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(148, 184, 218, 0.14);
+  border: 1px solid rgba(148, 184, 218, 0.22);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
 .route-banner {
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 10px;
-  padding: 12px;
+  padding: 11px 12px;
   border-radius: var(--radius-md);
-  background: rgba(4, 11, 21, 0.62);
-  border: 1px solid var(--border-subtle);
+  background: rgba(4, 11, 21, 0.68);
+  border: 1px solid rgba(56, 189, 248, 0.24);
+}
+
+.route-banner.unavailable {
+  border-color: var(--border-subtle);
+  opacity: 0.85;
 }
 
 .route-endpoint {
@@ -656,17 +683,31 @@ body {
   text-align: right;
 }
 
+.route-endpoint-label {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent-sky);
+  margin-bottom: 1px;
+}
+
 .route-iata {
   font-family: var(--font-mono);
   font-size: 18px;
   font-weight: 700;
   color: var(--text-primary);
+  line-height: 1.15;
+}
+
+.route-banner.unavailable .route-iata {
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 .route-name {
   font-size: 10.5px;
   color: var(--text-muted);
-  max-width: 82px;
+  max-width: 90px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

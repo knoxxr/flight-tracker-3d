@@ -1,6 +1,7 @@
 const ADSBDB_BASE = 'https://api.adsbdb.com/v0';
+const HEXDB_BASE = 'https://hexdb.io/api/v1';
 const PLANESPOTTERS_BASE = 'https://api.planespotters.net/pub/photos/hex';
-const USER_AGENT = 'AeroGlobe3D/1.4 (+https://github.com/knoxxr/flight-tracker-3d)';
+const USER_AGENT = 'AeroGlobe3D/1.5 (+https://github.com/knoxxr/flight-tracker-3d)';
 
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_CACHE_ENTRIES = 1000;
@@ -67,9 +68,24 @@ export function parseAdsbDbResponse(data) {
   };
 }
 
+/**
+ * Parse a hexdb.io route string like "RKSI-KJFK" or multi-leg "ZYHE-ZYHB-ZSPD".
+ */
+export function parseHexDbRoute(routeStr) {
+  if (!routeStr || typeof routeStr !== 'string') return null;
+  const legs = routeStr.trim().toUpperCase().split('-').map((s) => s.trim()).filter((s) => /^[A-Z0-9]{3,4}$/.test(s));
+  if (legs.length < 2) return null;
+  return {
+    originIcao: legs[0],
+    destinationIcao: legs[legs.length - 1],
+    via: legs.length > 2 ? legs.slice(1, -1) : []
+  };
+}
+
 export class AircraftEnrichmentService {
   constructor() {
     this.cache = new Map();
+    this.airportCache = new Map();
   }
 
   _getCached(key) {
@@ -90,6 +106,34 @@ export class AircraftEnrichmentService {
     this.cache.set(key, { value, at: Date.now() });
   }
 
+  async _lookupHexDbAirport(icao) {
+    const code = String(icao || '').trim().toUpperCase();
+    if (!code) return null;
+    if (this.airportCache.has(code)) return this.airportCache.get(code);
+    try {
+      const res = await fetch(`${HEXDB_BASE}/airport/icao/${encodeURIComponent(code)}`, {
+        headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
+        signal: AbortSignal.timeout(4000)
+      });
+      if (!res.ok) return { iata: code, icao: code, name: code, city: null, country: null, countryIso: null, lat: null, lon: null };
+      const ap = await res.json();
+      const normalized = {
+        iata: ap.iata || ap.icao || code,
+        icao: ap.icao || code,
+        name: ap.airport || code,
+        city: ap.region_name || ap.airport || null,
+        country: ap.country_code || null,
+        countryIso: ap.country_code || null,
+        lat: typeof ap.latitude === 'number' ? ap.latitude : null,
+        lon: typeof ap.longitude === 'number' ? ap.longitude : null
+      };
+      if (this.airportCache.size < 2000) this.airportCache.set(code, normalized);
+      return normalized;
+    } catch {
+      return { iata: code, icao: code, name: code, city: null, country: null, countryIso: null, lat: null, lon: null };
+    }
+  }
+
   async lookup(icao24, callsign = '') {
     const cleanHex = String(icao24 || '').trim().toUpperCase();
     const cleanCall = String(callsign || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -105,7 +149,7 @@ export class AircraftEnrichmentService {
     let flightroute = null;
     let photo = null;
 
-    // 1) Query adsbdb.com for aircraft specs, owner, photo, AND live callsign route
+    // 1) Primary: adsbdb.com for aircraft specs, owner, photo, AND live callsign route
     try {
       const url = cleanCall && cleanCall !== cleanHex
         ? `${ADSBDB_BASE}/aircraft/${encodeURIComponent(cleanHex)}?callsign=${encodeURIComponent(cleanCall)}`
@@ -135,7 +179,7 @@ export class AircraftEnrichmentService {
       // Optional enrichment failure is non-fatal
     }
 
-    // 2) If adsbdb had no route but we have a callsign, try direct /callsign endpoint
+    // 2) Fallback route lookup on adsbdb /callsign endpoint
     if (!flightroute && cleanCall && cleanCall !== cleanHex) {
       try {
         const res = await fetch(`${ADSBDB_BASE}/callsign/${encodeURIComponent(cleanCall)}`, {
@@ -152,7 +196,72 @@ export class AircraftEnrichmentService {
       }
     }
 
-    // 3) Query Planespotters.net public photo API for high-quality aircraft photo + photographer credit
+    // 3) Secondary fallback: hexdb.io route + airport coordinates (catches flights missing from adsbdb)
+    if (!flightroute && cleanCall && cleanCall !== cleanHex) {
+      try {
+        const candidates = [cleanCall];
+        // Also try unpadded numeric suffix (e.g. KAL081 -> KAL81)
+        const unpadded = cleanCall.replace(/^([A-Z]{3})0+(\d+)/, '$1$2');
+        if (unpadded !== cleanCall) candidates.push(unpadded);
+
+        for (const cand of candidates) {
+          const res = await fetch(`${HEXDB_BASE}/route/icao/${encodeURIComponent(cand)}`, {
+            headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
+            signal: AbortSignal.timeout(4500)
+          });
+          if (res.ok) {
+            const json = await res.json();
+            const parsedRoute = parseHexDbRoute(json?.route);
+            if (parsedRoute) {
+              const [origin, destination] = await Promise.all([
+                this._lookupHexDbAirport(parsedRoute.originIcao),
+                this._lookupHexDbAirport(parsedRoute.destinationIcao)
+              ]);
+              flightroute = {
+                callsignIata: null,
+                airline: null,
+                origin,
+                destination,
+                source: 'hexdb'
+              };
+              break;
+            }
+          }
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
+    // 4) Secondary fallback: hexdb.io aircraft registry when adsbdb lacks the hex
+    if (!aircraft) {
+      try {
+        const res = await fetch(`${HEXDB_BASE}/aircraft/${encodeURIComponent(cleanHex)}`, {
+          headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
+          signal: AbortSignal.timeout(4500)
+        });
+        if (res.ok) {
+          const ac = await res.json();
+          if (ac && (ac.Type || ac.Manufacturer || ac.RegisteredOwners || ac.Registration)) {
+            aircraft = {
+              type: ac.Type || null,
+              icaoType: ac.ICAOTypeCode || null,
+              manufacturer: ac.Manufacturer || null,
+              registration: ac.Registration || null,
+              owner: ac.RegisteredOwners || null,
+              ownerCountry: null,
+              ownerCountryIso: null,
+              photoUrl: null,
+              photoThumbUrl: null
+            };
+          }
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
+    // 5) Planespotters.net public photo API for real aircraft photo + photographer credit
     if (!photo) {
       try {
         const res = await fetch(`${PLANESPOTTERS_BASE}/${encodeURIComponent(cleanHex.toLowerCase())}`, {

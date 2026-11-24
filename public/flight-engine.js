@@ -2,6 +2,8 @@
 // Primary: OpenSky Network global state vectors (https://opensky-network.org/api/states/all)
 // Secondary: adsb.fi open data v3 regional real-time ADS-B (https://opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/250)
 
+import { resolveAircraftCountry, decodeCallsign } from './aviation-meta.js';
+
 const OPENSKY_URL = 'https://opensky-network.org/api/states/all';
 const ADSBFI_BASE_URL = 'https://opendata.adsb.fi/api/v3';
 
@@ -64,6 +66,9 @@ function parseOpenSkyVector(v, nowSec) {
   const icao24 = String(v[0] || '').trim().toLowerCase();
   if (!icao24) return null;
 
+  const callsign = String(v[1] || '').trim() || icao24.toUpperCase();
+  const country = resolveAircraftCountry(icao24, '', v[2]);
+  const csInfo = decodeCallsign(callsign);
   const altM = Math.max(0, Math.round(typeof v[7] === 'number' ? v[7] : (typeof v[13] === 'number' ? v[13] : 0)));
   const geomAltM = typeof v[13] === 'number' ? Math.max(0, Math.round(v[13])) : null;
   const altGeomFt = geomAltM !== null ? Math.round(geomAltM * 3.28084) : null;
@@ -74,8 +79,12 @@ function parseOpenSkyVector(v, nowSec) {
 
   return {
     icao24,
-    callsign: String(v[1] || '').trim() || icao24.toUpperCase(),
-    originCountry: String(v[2] || 'Unknown').trim(),
+    callsign,
+    iataFlight: csInfo?.iataFlight || null,
+    airlineName: csInfo?.airlineKo || csInfo?.airlineEn || null,
+    originCountry: country.nameKo,
+    countryFlag: country.flag,
+    countryIso: country.iso,
     aircraftType: 'ADS-B',
     aircraftLabel: 'Live Transponder',
     registration: icao24.toUpperCase(),
@@ -117,6 +126,10 @@ function parseAdsbFiItem(ac, nowSec) {
   const icao24 = String(ac.hex || '').trim().toLowerCase();
   if (!icao24) return null;
 
+  const callsign = String(ac.flight || '').trim() || String(ac.r || '').trim() || icao24.toUpperCase();
+  const registration = String(ac.r || icao24.toUpperCase()).trim();
+  const country = resolveAircraftCountry(icao24, registration, '');
+  const csInfo = decodeCallsign(callsign);
   const altFt = Math.max(0, Math.round(typeof ac.alt_baro === 'number' ? ac.alt_baro : (typeof ac.alt_geom === 'number' ? ac.alt_geom : 0)));
   const altGeomFt = typeof ac.alt_geom === 'number' ? Math.max(0, Math.round(ac.alt_geom)) : null;
   const speedKts = typeof ac.gs === 'number' ? Math.round(ac.gs) : 0;
@@ -132,11 +145,15 @@ function parseAdsbFiItem(ac, nowSec) {
 
   return {
     icao24,
-    callsign: String(ac.flight || '').trim() || String(ac.r || '').trim() || icao24.toUpperCase(),
-    originCountry: String(ac.ownOp || 'Live ADS-B').trim(),
+    callsign,
+    iataFlight: csInfo?.iataFlight || null,
+    airlineName: csInfo?.airlineKo || String(ac.ownOp || '').trim() || null,
+    originCountry: country.nameKo,
+    countryFlag: country.flag,
+    countryIso: country.iso,
     aircraftType: String(ac.t || 'ADS-B').trim(),
     aircraftLabel: String(ac.desc || ac.t || 'Live Transponder').trim(),
-    registration: String(ac.r || icao24.toUpperCase()).trim(),
+    registration,
     squawk: ac.squawk ? String(ac.squawk).trim() : '----',
     lat: Number(ac.lat.toFixed(4)),
     lon: Number(ac.lon.toFixed(4)),

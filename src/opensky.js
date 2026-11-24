@@ -1,10 +1,12 @@
+import { resolveAircraftCountry, decodeCallsign } from '../public/aviation-meta.js';
+
 const OPENSKY_STATES_URL = 'https://opensky-network.org/api/states/all';
 const OPENSKY_OAUTH_URL = 'https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token';
 const ADSBFI_BASE_URL = 'https://opendata.adsb.fi/api/v3';
 const ADSBLOL_BASE_URL = 'https://api.adsb.lol/v2';
 const FLYITALY_GLOBAL_URL = 'https://api.flyitalyadsb.com/v2/lat/0/lon/0/dist/20040';
 
-const USER_AGENT = 'AeroGlobe3D/1.3 (+https://github.com/knoxxr/flight-tracker-3d)';
+const USER_AGENT = 'AeroGlobe3D/1.5 (+https://github.com/knoxxr/flight-tracker-3d)';
 
 // 96-cell seamless global grid (~463km / 250NM radius overlapping circles) covering:
 // - All continents including inland/secondary cities
@@ -144,7 +146,8 @@ export function parseOpenSkyStateVector(vec, nowSec = Math.floor(Date.now() / 10
   if (!icao24) return null;
 
   const callsign = String(vec[1] || '').trim() || icao24.toUpperCase();
-  const originCountry = String(vec[2] || 'Unknown').trim();
+  const country = resolveAircraftCountry(icao24, '', vec[2]);
+  const csInfo = decodeCallsign(callsign);
   const lastContact = typeof vec[4] === 'number' ? vec[4] : nowSec;
   const baroAltM = typeof vec[7] === 'number' ? vec[7] : (typeof vec[13] === 'number' ? vec[13] : 0);
   const onGround = Boolean(vec[8]);
@@ -167,7 +170,11 @@ export function parseOpenSkyStateVector(vec, nowSec = Math.floor(Date.now() / 10
   return {
     icao24,
     callsign,
-    originCountry,
+    iataFlight: csInfo?.iataFlight || null,
+    airlineName: csInfo?.airlineKo || csInfo?.airlineEn || null,
+    originCountry: country.nameKo,
+    countryFlag: country.flag,
+    countryIso: country.iso,
     aircraftType: 'ADS-B',
     aircraftLabel: 'Live Transponder',
     registration: icao24.toUpperCase(),
@@ -232,6 +239,9 @@ export function parseAdsbFiAircraft(ac, nowSec = Math.floor(Date.now() / 1000), 
   const verticalRateMs = Number((verticalRateFpm * 0.00508).toFixed(2));
 
   const callsign = String(ac.flight || '').trim() || String(ac.r || '').trim() || icao24.toUpperCase();
+  const registration = String(ac.r || icao24.toUpperCase()).trim();
+  const country = resolveAircraftCountry(icao24, registration, '');
+  const csInfo = decodeCallsign(callsign);
   const seenSec = typeof ac.seen_pos === 'number'
     ? Math.round(ac.seen_pos)
     : (typeof ac.seen === 'number' ? Math.round(ac.seen) : 0);
@@ -243,10 +253,14 @@ export function parseAdsbFiAircraft(ac, nowSec = Math.floor(Date.now() / 1000), 
   return {
     icao24,
     callsign,
-    originCountry: String(ac.ownOp || (source === 'adsblol' ? 'adsb.lol Live' : (source === 'flyitaly' ? 'FlyItalyADSB Live' : 'adsb.fi Live'))).trim(),
+    iataFlight: csInfo?.iataFlight || null,
+    airlineName: csInfo?.airlineKo || String(ac.ownOp || '').trim() || null,
+    originCountry: country.nameKo,
+    countryFlag: country.flag,
+    countryIso: country.iso,
     aircraftType: String(ac.t || 'ADS-B').trim(),
     aircraftLabel: String(ac.desc || ac.t || 'Live Transponder').trim(),
-    registration: String(ac.r || icao24.toUpperCase()).trim(),
+    registration,
     squawk: ac.squawk ? String(ac.squawk).trim() : '----',
     lat: Number(ac.lat.toFixed(4)),
     lon: Number(ac.lon.toFixed(4)),

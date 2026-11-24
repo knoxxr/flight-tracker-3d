@@ -1,5 +1,6 @@
 import { Globe3D } from './globe.js';
 import { LiveBrowserAdsbClient, STATIC_AIRPORTS } from './flight-engine.js';
+import { resolveAircraftCountry, decodeCallsign } from './aviation-meta.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -74,15 +75,24 @@ const globe = new Globe3D(canvas, {
       tooltipEl.classList.add('hidden');
       return;
     }
-    const meta = flight.aircraftType && flight.aircraftType !== 'ADS-B'
-      ? ` · ${flight.aircraftType}`
-      : (flight.originCountry ? ` · ${flight.originCountry}` : '');
+    const country = resolveAircraftCountry(flight.icao24, flight.registration, flight.originCountry);
+    const csInfo = decodeCallsign(flight.callsign);
+    const enriched = state.enrichmentCache.get(flight.icao24);
+    const iataCode = enriched?.flightroute?.callsignIata || flight.iataFlight || csInfo?.iataFlight;
+    const titleStr = iataCode && iataCode !== flight.callsign
+      ? `${country.flag} ${iataCode} (${flight.callsign})`
+      : `${country.flag} ${flight.callsign}`;
+    const route = enriched?.flightroute;
+    const routeStr = route?.origin && route?.destination
+      ? `${route.origin.iata || route.origin.icao} → ${route.destination.iata || route.destination.icao}`
+      : (flight.airlineName || csInfo?.airlineKo || country.nameKo);
+    const typeMeta = flight.aircraftType && flight.aircraftType !== 'ADS-B' ? ` · ${flight.aircraftType}` : '';
     tooltipEl.innerHTML = `
-      <div><span class="tooltip-callsign">${escapeHtml(flight.callsign)}</span><span>${escapeHtml(meta)}</span></div>
-      <div class="tooltip-meta">${formatNumber(flight.altitudeFt)} ft · ${flight.speedKts} kts · HDG ${Math.round(flight.heading)}°</div>
+      <div><span class="tooltip-callsign">${escapeHtml(titleStr)}</span><span>${escapeHtml(typeMeta)}</span></div>
+      <div class="tooltip-meta">${escapeHtml(routeStr)} · ${formatNumber(flight.altitudeFt)} ft · ${flight.speedKts} kts</div>
     `;
-    tooltipEl.style.left = `${Math.min(window.innerWidth - 220, pos.x + 14)}px`;
-    tooltipEl.style.top = `${Math.max(12, pos.y - 42)}px`;
+    tooltipEl.style.left = `${Math.min(window.innerWidth - 250, pos.x + 14)}px`;
+    tooltipEl.style.top = `${Math.max(12, pos.y - 44)}px`;
     tooltipEl.classList.remove('hidden');
   }
 });
@@ -160,6 +170,8 @@ function applySearchFilter() {
   } else {
     state.flights = state.rawFlights.filter((f) =>
       (f.callsign && f.callsign.toLowerCase().includes(q)) ||
+      (f.iataFlight && f.iataFlight.toLowerCase().includes(q)) ||
+      (f.airlineName && f.airlineName.toLowerCase().includes(q)) ||
       (f.icao24 && f.icao24.toLowerCase().includes(q)) ||
       (f.registration && f.registration.toLowerCase().includes(q)) ||
       (f.aircraftType && f.aircraftType.toLowerCase().includes(q)) ||
@@ -278,13 +290,30 @@ function applyEnrichmentToFlight(f) {
   return f;
 }
 
+async function fetchHexDbAirportClient(icao) {
+  try {
+    const res = await fetch(`https://hexdb.io/api/v1/airport/icao/${encodeURIComponent(icao)}`);
+    if (!res.ok) return { iata: icao, icao, name: icao, city: null, lat: null, lon: null };
+    const ap = await res.json();
+    return {
+      iata: ap.iata || ap.icao || icao,
+      icao: ap.icao || icao,
+      name: ap.airport || icao,
+      city: ap.region_name || ap.airport || null,
+      lat: typeof ap.latitude === 'number' ? ap.latitude : null,
+      lon: typeof ap.longitude === 'number' ? ap.longitude : null
+    };
+  } catch {
+    return { iata: icao, icao, name: icao, city: null, lat: null, lon: null };
+  }
+}
+
 async function fetchFlightEnrichment(flight) {
   const icao = flight.icao24;
   if (!icao || state.enrichmentCache.has(icao) || state.enrichmentPending.has(icao)) return;
   state.enrichmentPending.add(icao);
-  if (state.selectedIcao === icao) {
-    const statusEl = document.getElementById('detail-enrich-status');
-    if (statusEl) statusEl.textContent = '추가 정보 조회 중...';
+  if (state.selectedIcao === icao && state.panelMode === 'detail') {
+    renderFlightDetail();
   }
 
   try {
@@ -294,53 +323,82 @@ async function fetchFlightEnrichment(flight) {
       const res = await fetch(`./api/enrich/${encodeURIComponent(icao)}?${qs.toString()}`);
       if (res.ok) data = await res.json();
     } else {
-      // Static GitHub Pages fallback: query CORS-open adsbdb.com directly
-      const call = (flight.callsign || '').replace(/[^A-Z0-9]/gi, '');
-      const url = call && call.toLowerCase() !== icao
-        ? `https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(icao.toUpperCase())}?callsign=${encodeURIComponent(call)}`
-        : `https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(icao.toUpperCase())}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const raw = await res.json();
-        const r = raw?.response || {};
-        const ac = r.aircraft && typeof r.aircraft === 'object' ? r.aircraft : null;
-        const fr = r.flightroute && typeof r.flightroute === 'object' ? r.flightroute : null;
-        data = {
-          ok: Boolean(ac || fr),
-          aircraft: ac ? {
-            type: ac.type,
-            icaoType: ac.icao_type,
-            manufacturer: ac.manufacturer,
-            registration: ac.registration,
-            owner: ac.registered_owner,
-            ownerCountry: ac.registered_owner_country_name
-          } : null,
-          flightroute: fr ? {
-            callsignIata: fr.callsign_iata,
-            airline: fr.airline,
-            origin: fr.origin ? {
-              iata: fr.origin.iata_code || fr.origin.icao_code,
-              icao: fr.origin.icao_code,
-              name: fr.origin.name,
-              city: fr.origin.municipality,
-              lat: fr.origin.latitude,
-              lon: fr.origin.longitude
-            } : null,
-            destination: fr.destination ? {
-              iata: fr.destination.iata_code || fr.destination.icao_code,
-              icao: fr.destination.icao_code,
-              name: fr.destination.name,
-              city: fr.destination.municipality,
-              lat: fr.destination.latitude,
-              lon: fr.destination.longitude
-            } : null
-          } : null,
-          photo: ac && (ac.url_photo || ac.url_photo_thumbnail) ? {
-            url: ac.url_photo || ac.url_photo_thumbnail,
-            credit: 'adsbdb'
-          } : null
-        };
+      // Static GitHub Pages fallback: query CORS-open adsbdb.com + hexdb.io directly
+      const call = (flight.callsign || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+      let aircraft = null;
+      let flightroute = null;
+      let photo = null;
+
+      try {
+        const url = call && call.toLowerCase() !== icao
+          ? `https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(icao.toUpperCase())}?callsign=${encodeURIComponent(call)}`
+          : `https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(icao.toUpperCase())}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const raw = await res.json();
+          const r = raw?.response || {};
+          const ac = r.aircraft && typeof r.aircraft === 'object' ? r.aircraft : null;
+          const fr = r.flightroute && typeof r.flightroute === 'object' ? r.flightroute : null;
+          if (ac) {
+            aircraft = {
+              type: ac.type,
+              icaoType: ac.icao_type,
+              manufacturer: ac.manufacturer,
+              registration: ac.registration,
+              owner: ac.registered_owner,
+              ownerCountry: ac.registered_owner_country_name
+            };
+            if (ac.url_photo || ac.url_photo_thumbnail) {
+              photo = { url: ac.url_photo || ac.url_photo_thumbnail, credit: 'adsbdb' };
+            }
+          }
+          if (fr) {
+            flightroute = {
+              callsignIata: fr.callsign_iata,
+              airline: fr.airline,
+              origin: fr.origin ? {
+                iata: fr.origin.iata_code || fr.origin.icao_code,
+                icao: fr.origin.icao_code,
+                name: fr.origin.name,
+                city: fr.origin.municipality,
+                lat: fr.origin.latitude,
+                lon: fr.origin.longitude
+              } : null,
+              destination: fr.destination ? {
+                iata: fr.destination.iata_code || fr.destination.icao_code,
+                icao: fr.destination.icao_code,
+                name: fr.destination.name,
+                city: fr.destination.municipality,
+                lat: fr.destination.latitude,
+                lon: fr.destination.longitude
+              } : null
+            };
+          }
+        }
+      } catch {
+        // Fallback to hexdb below
       }
+
+      if (!flightroute && call && call.toLowerCase() !== icao) {
+        try {
+          const rHex = await fetch(`https://hexdb.io/api/v1/route/icao/${encodeURIComponent(call)}`);
+          if (rHex.ok) {
+            const jHex = await rHex.json();
+            const legs = String(jHex?.route || '').split('-').map((s) => s.trim().toUpperCase()).filter(Boolean);
+            if (legs.length >= 2) {
+              const [origin, destination] = await Promise.all([
+                fetchHexDbAirportClient(legs[0]),
+                fetchHexDbAirportClient(legs[legs.length - 1])
+              ]);
+              flightroute = { callsignIata: null, airline: null, origin, destination };
+            }
+          }
+        } catch {
+          // Ignore
+        }
+      }
+
+      data = { ok: Boolean(aircraft || flightroute || photo), aircraft, flightroute, photo };
     }
 
     state.enrichmentCache.set(icao, data || { ok: false, aircraft: null, flightroute: null, photo: null });
@@ -350,6 +408,9 @@ async function fetchFlightEnrichment(flight) {
     state.enrichmentPending.delete(icao);
     if (state.selectedIcao === icao && state.panelMode === 'detail') {
       renderFlightDetail();
+    }
+    if (state.panelMode === 'list') {
+      renderFlightList();
     }
   }
 }
@@ -376,14 +437,22 @@ function renderFlightList() {
   listContainerEl.innerHTML = topFlights
     .map((f) => {
       const selectedClass = f.icao24 === state.selectedIcao ? ' selected' : '';
-      const sub = f.registration && f.registration !== f.icao24.toUpperCase()
-        ? `${f.registration} · ${f.originCountry}`
-        : f.originCountry;
+      const country = resolveAircraftCountry(f.icao24, f.registration, f.originCountry);
+      const csInfo = decodeCallsign(f.callsign);
+      const enriched = state.enrichmentCache.get(f.icao24);
+      const iataCode = enriched?.flightroute?.callsignIata || f.iataFlight || csInfo?.iataFlight;
+      const callLabel = iataCode && iataCode !== f.callsign ? `${iataCode} · ${f.callsign}` : f.callsign;
+      const route = enriched?.flightroute;
+      const routeStr = route?.origin && route?.destination
+        ? `${route.origin.iata || route.origin.icao} → ${route.destination.iata || route.destination.icao}`
+        : null;
+      const airlineStr = enriched?.flightroute?.airline?.name || f.airlineName || csInfo?.airlineKo || null;
+      const subParts = [routeStr, airlineStr, country.nameKo].filter(Boolean);
       return `
         <button type="button" class="flight-row${selectedClass}" data-icao="${escapeHtml(f.icao24)}">
           <div class="flight-row-main">
-            <span class="flight-row-callsign">${escapeHtml(f.callsign)} <span class="muted">${escapeHtml(f.aircraftType)}</span></span>
-            <span class="flight-row-sub">${escapeHtml(sub)}</span>
+            <span class="flight-row-callsign">${country.flag} ${escapeHtml(callLabel)} <span class="muted">${escapeHtml(f.aircraftType)}</span></span>
+            <span class="flight-row-sub">${escapeHtml(subParts.join(' · '))}</span>
           </div>
           <div class="flight-row-metrics">
             <div>${formatNumber(f.altitudeFt)} ft</div>
@@ -443,19 +512,32 @@ function renderFlightDetail() {
   if (!f) return;
 
   const enriched = state.enrichmentCache.get(f.icao24);
+  const isPending = state.enrichmentPending.has(f.icao24);
   const acInfo = enriched?.aircraft;
   const routeInfo = enriched?.flightroute;
   const photoInfo = enriched?.photo;
+  const csInfo = decodeCallsign(f.callsign);
 
   const icaoType = acInfo?.icaoType || f.aircraftType || 'ADS-B';
-  const airlineDisplay = routeInfo?.airline?.name || acInfo?.owner || f.originCountry || 'Live ADS-B';
   const regDisplay = acInfo?.registration || f.registration || '---';
-  const countryDisplay = acInfo?.ownerCountry || routeInfo?.airline?.country || f.originCountry || '---';
+  const country = resolveAircraftCountry(
+    f.icao24,
+    regDisplay,
+    acInfo?.ownerCountry || routeInfo?.airline?.country || f.originCountry
+  );
+  const iataFlight = routeInfo?.callsignIata || f.iataFlight || csInfo?.iataFlight;
+  const airlineDisplay = csInfo?.airlineKo
+    || routeInfo?.airline?.name
+    || acInfo?.owner
+    || f.airlineName
+    || '민간 · 일반 항공기';
+  const countryDisplay = `${country.flag} ${country.nameKo}`;
 
-  document.getElementById('detail-callsign').textContent = routeInfo?.callsignIata
-    ? `${f.callsign} (${routeInfo.callsignIata})`
+  document.getElementById('detail-callsign').textContent = iataFlight && iataFlight !== f.callsign
+    ? `${iataFlight} · ${f.callsign}`
     : f.callsign;
   document.getElementById('detail-aircraft-type').textContent = icaoType;
+  document.getElementById('detail-country-pill').textContent = countryDisplay;
   document.getElementById('detail-airline').textContent = airlineDisplay;
 
   // Flight Phase Badge
@@ -463,6 +545,49 @@ function renderFlightDetail() {
   const phaseEl = document.getElementById('detail-phase');
   phaseEl.textContent = phase.label;
   phaseEl.className = `phase-tag${phase.cls ? ' ' + phase.cls : ''}`;
+
+  // Real Origin -> Destination Route Card (always visible)
+  const routeCardEl = document.getElementById('detail-route-card');
+  if (routeInfo?.origin && routeInfo?.destination) {
+    const o = routeInfo.origin;
+    const d = routeInfo.destination;
+    routeCardEl.classList.remove('unavailable');
+    document.getElementById('detail-origin-iata').textContent = o.iata || o.icao || '---';
+    document.getElementById('detail-origin-city').textContent = o.city || o.name || '출발지';
+    document.getElementById('detail-dest-iata').textContent = d.iata || d.icao || '---';
+    document.getElementById('detail-dest-city').textContent = d.city || d.name || '목적지';
+
+    if (typeof o.lat === 'number' && typeof d.lat === 'number') {
+      const totalKm = Math.max(1, haversineKm(o.lat, o.lon, d.lat, d.lon));
+      const flownKm = haversineKm(o.lat, o.lon, f.lat, f.lon);
+      const remainKm = Math.round(haversineKm(f.lat, f.lon, d.lat, d.lon));
+      const pct = Math.max(2, Math.min(98, Math.round((flownKm / (flownKm + remainKm || totalKm)) * 100)));
+      const etaMin = f.speedKmh > 120 ? Math.round((remainKm / f.speedKmh) * 60) : 0;
+      document.getElementById('detail-route-progress').style.width = `${pct}%`;
+      document.getElementById('detail-route-eta').textContent = etaMin > 0
+        ? `잔여 ${formatNumber(remainKm)} km · 약 ${formatDurationKorean(etaMin)}`
+        : `총 ${formatNumber(Math.round(totalKm))} km`;
+    } else {
+      document.getElementById('detail-route-progress').style.width = '50%';
+      document.getElementById('detail-route-eta').textContent = '실시간 운항 중';
+    }
+  } else if (isPending || !enriched) {
+    routeCardEl.classList.remove('unavailable');
+    document.getElementById('detail-origin-iata').textContent = '...';
+    document.getElementById('detail-origin-city').textContent = '조회 중';
+    document.getElementById('detail-dest-iata').textContent = '...';
+    document.getElementById('detail-dest-city').textContent = '조회 중';
+    document.getElementById('detail-route-progress').style.width = '30%';
+    document.getElementById('detail-route-eta').textContent = '출발·목적지 조회 중...';
+  } else {
+    routeCardEl.classList.add('unavailable');
+    document.getElementById('detail-origin-iata').textContent = '미공개';
+    document.getElementById('detail-origin-city').textContent = '출발지 없음';
+    document.getElementById('detail-dest-iata').textContent = '미공개';
+    document.getElementById('detail-dest-city').textContent = '목적지 없음';
+    document.getElementById('detail-route-progress').style.width = '0%';
+    document.getElementById('detail-route-eta').textContent = '비정기·개인·군용 등 공개 노선 없음';
+  }
 
   // Aircraft Photo Card
   const photoCardEl = document.getElementById('detail-photo-card');
@@ -487,35 +612,6 @@ function renderFlightDetail() {
     }
   } else {
     photoCardEl.classList.add('hidden');
-  }
-
-  // Real Origin -> Destination Route Card
-  const routeCardEl = document.getElementById('detail-route-card');
-  if (routeInfo?.origin && routeInfo?.destination) {
-    const o = routeInfo.origin;
-    const d = routeInfo.destination;
-    document.getElementById('detail-origin-iata').textContent = o.iata || o.icao || '---';
-    document.getElementById('detail-origin-city').textContent = o.city || o.name || '출발지';
-    document.getElementById('detail-dest-iata').textContent = d.iata || d.icao || '---';
-    document.getElementById('detail-dest-city').textContent = d.city || d.name || '도착지';
-
-    if (typeof o.lat === 'number' && typeof d.lat === 'number') {
-      const totalKm = Math.max(1, haversineKm(o.lat, o.lon, d.lat, d.lon));
-      const flownKm = haversineKm(o.lat, o.lon, f.lat, f.lon);
-      const remainKm = Math.round(haversineKm(f.lat, f.lon, d.lat, d.lon));
-      const pct = Math.max(2, Math.min(98, Math.round((flownKm / (flownKm + remainKm || totalKm)) * 100)));
-      const etaMin = f.speedKmh > 120 ? Math.round((remainKm / f.speedKmh) * 60) : 0;
-      document.getElementById('detail-route-progress').style.width = `${pct}%`;
-      document.getElementById('detail-route-eta').textContent = etaMin > 0
-        ? `잔여 ${formatNumber(remainKm)} km · 약 ${formatDurationKorean(etaMin)}`
-        : `총 ${formatNumber(Math.round(totalKm))} km`;
-    } else {
-      document.getElementById('detail-route-progress').style.width = '50%';
-      document.getElementById('detail-route-eta').textContent = '실시간 운항 중';
-    }
-    routeCardEl.classList.remove('hidden');
-  } else {
-    routeCardEl.classList.add('hidden');
   }
 
   // Source & Signal Age
@@ -557,7 +653,7 @@ function renderFlightDetail() {
   const fullModelStr = [acInfo?.manufacturer, acInfo?.type].filter(Boolean).join(' ')
     || (f.aircraftLabel && f.aircraftLabel !== 'Live Transponder' ? f.aircraftLabel : '정보 없음');
   document.getElementById('spec-model').textContent = fullModelStr;
-  document.getElementById('spec-owner').textContent = acInfo?.owner || routeInfo?.airline?.name || f.originCountry || '정보 없음';
+  document.getElementById('spec-owner').textContent = acInfo?.owner || routeInfo?.airline?.name || csInfo?.airlineKo || f.airlineName || '정보 없음';
 
   const catLabel = f.category ? (CATEGORY_LABELS[f.category] || f.category) : null;
   const yearLabel = f.year ? `${f.year}년 제작` : null;

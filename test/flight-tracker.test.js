@@ -5,8 +5,52 @@ import {
   parseAdsbFiAircraft,
   deadReckonFlight
 } from '../src/opensky.js';
-import { parseAdsbDbResponse } from '../src/enrichment.js';
+import { parseAdsbDbResponse, parseHexDbRoute } from '../src/enrichment.js';
+import { resolveAircraftCountry, decodeCallsign } from '../public/aviation-meta.js';
 import { createAppServer } from '../src/server.js';
+
+test('resolveAircraftCountry decodes ICAO24 hex & registration into Korean country + flag', () => {
+  const kr = resolveAircraftCountry('71bf01', 'HL7701', '');
+  assert.equal(kr.iso, 'KR');
+  assert.equal(kr.nameKo, '대한민국');
+  assert.equal(kr.flag, '🇰🇷');
+
+  const hk = resolveAircraftCountry('780a01', 'B-KQA', '');
+  assert.equal(hk.iso, 'HK');
+  assert.equal(hk.nameKo, '홍콩');
+
+  const us = resolveAircraftCountry('a12345', '', 'adsb.lol Live');
+  assert.equal(us.iso, 'US');
+  assert.equal(us.nameKo, '미국');
+});
+
+test('decodeCallsign converts ICAO callsign to IATA flight number & Korean airline name', () => {
+  const ke = decodeCallsign('KAL081');
+  assert.equal(ke.iataFlight, 'KE81');
+  assert.equal(ke.airlineKo, '대한항공');
+
+  const oz = decodeCallsign('AAR201');
+  assert.equal(oz.iataFlight, 'OZ201');
+  assert.equal(oz.airlineKo, '아시아나항공');
+
+  const jl = decodeCallsign('JAL25');
+  assert.equal(jl.iataFlight, 'JL25');
+  assert.equal(jl.airlineKo, '일본항공 (JAL)');
+});
+
+test('parseHexDbRoute handles direct and multi-leg ICAO routes', () => {
+  assert.deepEqual(parseHexDbRoute('RKSI-KJFK'), {
+    originIcao: 'RKSI',
+    destinationIcao: 'KJFK',
+    via: []
+  });
+  assert.deepEqual(parseHexDbRoute('ZYHE-ZYHB-ZSPD'), {
+    originIcao: 'ZYHE',
+    destinationIcao: 'ZSPD',
+    via: ['ZYHB']
+  });
+  assert.equal(parseHexDbRoute('INVALID'), null);
+});
 
 test('parseOpenSkyStateVector normalizes valid 17-element OpenSky state vector', () => {
   const raw = [
@@ -18,6 +62,10 @@ test('parseOpenSkyStateVector normalizes valid 17-element OpenSky state vector',
   assert.ok(parsed);
   assert.equal(parsed.icao24, '71be20');
   assert.equal(parsed.callsign, 'KAL081');
+  assert.equal(parsed.iataFlight, 'KE81');
+  assert.equal(parsed.airlineName, '대한항공');
+  assert.equal(parsed.originCountry, '대한민국');
+  assert.equal(parsed.countryFlag, '🇰🇷');
   assert.equal(parsed.altitudeM, 10668);
   assert.ok(parsed.altitudeFt > 34900 && parsed.altitudeFt < 35100);
   assert.ok(parsed.altGeomFt > 35700 && parsed.altGeomFt < 35800);
@@ -67,6 +115,10 @@ test('parseAdsbFiAircraft normalizes adsb.fi v3 live aircraft object and extende
   assert.ok(parsed);
   assert.equal(parsed.icao24, '71bf01');
   assert.equal(parsed.callsign, 'AAR201');
+  assert.equal(parsed.iataFlight, 'OZ201');
+  assert.equal(parsed.airlineName, '아시아나항공');
+  assert.equal(parsed.originCountry, '대한민국');
+  assert.equal(parsed.countryFlag, '🇰🇷');
   assert.equal(parsed.registration, 'HL8382');
   assert.equal(parsed.aircraftType, 'A359');
   assert.equal(parsed.altitudeFt, 35000);
@@ -95,6 +147,7 @@ test('parseAdsbFiAircraft flags ground aircraft accurately', () => {
   assert.ok(parsed);
   assert.equal(parsed.onGround, true);
   assert.equal(parsed.altitudeFt, 0);
+  assert.equal(parsed.originCountry, '미국');
 });
 
 test('parseAdsbDbResponse extracts aircraft metadata and origin/destination flightroute', () => {
