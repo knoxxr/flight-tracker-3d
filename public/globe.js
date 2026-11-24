@@ -62,6 +62,8 @@ export class Globe3D {
     this.onCameraSettled = options.onCameraSettled || (() => {});
 
     // Camera state (smoothly damped toward target)
+    this.minZoom = options.minZoom ?? 0.85;
+    this.maxZoom = options.maxZoom ?? 30.0;
     this.camLat = options.initialLat ?? 32;
     this.camLon = options.initialLon ?? 126;
     this.zoom = options.initialZoom ?? 1.25;
@@ -164,7 +166,7 @@ export class Globe3D {
     // Pick shortest longitude wrap path
     let diff = ((lon - this.targetLon + 540) % 360) - 180;
     this.targetLon += diff;
-    this.targetZoom = Math.max(0.85, Math.min(6.5, zoom));
+    this.targetZoom = Math.max(this.minZoom, Math.min(this.maxZoom, zoom));
   }
 
   resize() {
@@ -223,18 +225,18 @@ export class Globe3D {
         activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
       }
 
-      // Two-finger pinch-to-zoom
+      // Two-finger pinch-to-zoom (up to 30x)
       if (activePointers.size >= 2) {
         const dist = getPinchDistance();
         if (dist && prevPinchDist && prevPinchDist > 8) {
           const ratio = dist / prevPinchDist;
-          this.targetZoom = Math.max(0.85, Math.min(6.5, this.targetZoom * ratio));
+          this.targetZoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.targetZoom * ratio));
         }
         prevPinchDist = dist;
         return;
       }
 
-      // Single-finger / mouse orbit drag
+      // Single-finger / mouse orbit drag (scales 1/zoom for crisp precision even at 30x zoom)
       if (this.isDragging && activePointers.size === 1) {
         const dx = e.clientX - this.lastPointer.x;
         const dy = e.clientY - this.lastPointer.y;
@@ -243,11 +245,11 @@ export class Globe3D {
           this.dragMoved = true;
           this.followSelected = false;
         }
-        const sensitivity = (e.pointerType === 'touch' ? 0.34 : 0.28) / Math.sqrt(this.zoom);
+        const sensitivity = (e.pointerType === 'touch' ? 0.34 : 0.28) / Math.max(0.85, this.zoom);
         this.targetLon -= dx * sensitivity;
         this.targetLat = Math.max(-82, Math.min(82, this.targetLat + dy * sensitivity));
-        this.velocityLon = -dx * sensitivity * 0.35;
-        this.velocityLat = dy * sensitivity * 0.35;
+        this.velocityLon = -dx * sensitivity * 0.32;
+        this.velocityLat = dy * sensitivity * 0.32;
         this.lastPointer = { x: e.clientX, y: e.clientY };
         return;
       }
@@ -321,11 +323,15 @@ export class Globe3D {
       'wheel',
       (e) => {
         e.preventDefault();
-        const factor = Math.exp(-e.deltaY * 0.0012);
-        this.targetZoom = Math.max(0.85, Math.min(6.5, this.targetZoom * factor));
+        const factor = Math.exp(-e.deltaY * 0.0014);
+        this.targetZoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.targetZoom * factor));
       },
       { passive: false }
     );
+
+    el.addEventListener('dblclick', () => {
+      this.targetZoom = Math.min(this.maxZoom, this.targetZoom * 1.75);
+    });
   }
 
   _hitTest(px, py, radiusPx = 16) {
@@ -907,20 +913,27 @@ export class Globe3D {
   _drawFlights(ctx, mat, cx, cy, R, isLight, now) {
     const projected = [];
     const showTrails = this.options.showTrails;
+    const altExag = 1 / (1 + Math.max(0, this.zoom - 2) * 0.32);
+    const pad = 90;
+    const maxX = this.width + pad;
+    const maxY = this.height + pad;
 
     for (const f of this.flights) {
       const vec = latLonToVec3(f.lat, f.lon);
       const altRatio = Math.min(1.2, Math.max(0, (f.altitudeFt || 0) / 42000));
-      const lift = 1 + 0.008 + altRatio * 0.036;
+      const lift = 1 + (0.008 + altRatio * 0.036) * altExag;
       const p = this._projectVec(vec, mat, cx, cy, R, lift);
 
-      // True 3D horizon occlusion: visible if on front hemisphere OR lifted above the horizon silhouette
+      // True 3D horizon occlusion + viewport culling when zoomed deep in
       const visible = p.z > -0.02 || Math.hypot(p.rx * lift, p.ry * lift) > 1.002;
       if (!visible) continue;
+      if (f.icao24 !== this.selectedIcao && (p.x < -pad || p.x > maxX || p.y < -pad || p.y > maxY)) {
+        continue;
+      }
 
       // Compute exact 2D screen-space heading angle by projecting a short forward step
       const hdgRad = (f.heading || 0) * DEG2RAD;
-      const stepDeg = 0.65;
+      const stepDeg = Math.max(0.08, 0.65 / Math.max(1, this.zoom * 0.5));
       const cosLat = Math.max(0.15, Math.cos(f.lat * DEG2RAD));
       const aheadLat = Math.max(-89, Math.min(89, f.lat + Math.cos(hdgRad) * stepDeg));
       const aheadLon = f.lon + (Math.sin(hdgRad) * stepDeg) / cosLat;
@@ -929,7 +942,7 @@ export class Globe3D {
 
       let tail = null;
       if (showTrails) {
-        const backDeg = 2.4;
+        const backDeg = Math.max(0.25, 2.4 / Math.max(1, this.zoom * 0.45));
         const backLat = Math.max(-89, Math.min(89, f.lat - Math.cos(hdgRad) * backDeg));
         const backLon = f.lon - (Math.sin(hdgRad) * backDeg) / cosLat;
         const pBack = this._projectVec(latLonToVec3(backLat, backLon), mat, cx, cy, R, lift);
@@ -959,7 +972,7 @@ export class Globe3D {
 
     const dense = projected.length > 700;
     const densityScale = projected.length > 1800 ? 0.72 : (projected.length > 900 ? 0.85 : 1);
-    const baseSize = Math.min(9.5, (4.4 + this.zoom * 1.15) * densityScale);
+    const baseSize = Math.min(12.5, (4.4 + Math.min(this.zoom, 10) * 0.85) * densityScale);
 
     for (const item of projected) {
       const { flight, x, y, z, angle, tail, surface } = item;
@@ -1064,11 +1077,14 @@ export class Globe3D {
       }
       ctx.restore();
 
-      // Callsign label when selected or deeply zoomed in
+      // Callsign (+ altitude when zoomed deep in) label
       if (isSelected || (this.zoom >= 3.2 && z > 0.35)) {
         ctx.save();
         ctx.font = `${isSelected ? '700' : '600'} 10px ui-monospace, SFMono-Regular, Menlo, monospace`;
-        const label = flight.callsign || flight.icao24;
+        const baseLabel = flight.callsign || flight.icao24;
+        const label = (!isSelected && this.zoom >= 6.5 && flight.altitudeFt)
+          ? `${baseLabel} ${Math.round(flight.altitudeFt / 1000)}k`
+          : baseLabel;
         const tw = ctx.measureText(label).width + 8;
         ctx.fillStyle = isLight ? 'rgba(255, 255, 255, 0.88)' : 'rgba(6, 15, 29, 0.84)';
         ctx.beginPath();

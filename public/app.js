@@ -510,13 +510,13 @@ function bindUI() {
 
   if (mobileZoomInBtn) {
     mobileZoomInBtn.addEventListener('click', () => {
-      globe.targetZoom = Math.min(6.5, globe.targetZoom * 1.32);
+      globe.targetZoom = Math.min(globe.maxZoom, globe.targetZoom * 1.45);
     });
   }
 
   if (mobileZoomOutBtn) {
     mobileZoomOutBtn.addEventListener('click', () => {
-      globe.targetZoom = Math.max(0.85, globe.targetZoom / 1.32);
+      globe.targetZoom = Math.max(globe.minZoom, globe.targetZoom / 1.45);
     });
   }
 
@@ -569,10 +569,10 @@ function bindUI() {
   bindToggle('toggle-airports', 'showAirports');
 
   document.getElementById('zoom-in-btn').addEventListener('click', () => {
-    globe.targetZoom = Math.min(6.5, globe.targetZoom * 1.32);
+    globe.targetZoom = Math.min(globe.maxZoom, globe.targetZoom * 1.45);
   });
   document.getElementById('zoom-out-btn').addEventListener('click', () => {
-    globe.targetZoom = Math.max(0.85, globe.targetZoom / 1.32);
+    globe.targetZoom = Math.max(globe.minZoom, globe.targetZoom / 1.45);
   });
 
   followBtn.addEventListener('click', () => {
